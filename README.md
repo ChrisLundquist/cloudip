@@ -1,9 +1,16 @@
 # cloudip — Cloud IP Attribution
 
-GeoIP-style attribution of IP networks to cloud providers. Per-provider plugins
-normalize published IP ranges into a single MMDB (`DatabaseType:
-Cloud-Attribution`); a thin reader library is wrapped by gRPC / HTTP / CLI, and
-the **same** MMDB is consumed directly by nginx via `ngx_http_geoip2_module`.
+You've got server logs full of IP addresses, and you want to know which ones are
+AWS, which are Azure, which are a Cloudflare edge, and which are just some random
+VPS. That's the problem cloudip solves: it's GeoIP-style attribution, but instead
+of mapping IPs to *places*, it maps them to the *cloud provider* that owns them.
+
+It works by gathering each provider's published IP ranges, normalizing them with
+per-provider plugins, and baking the whole lot into a single MMDB (`DatabaseType:
+Cloud-Attribution`). From there a thin reader library is wrapped by gRPC / HTTP /
+CLI — and, because it's a real MMDB, the **same** file can be read directly by
+nginx via `ngx_http_geoip2_module`, no custom module required. Here's how the
+pieces fit together:
 
 ```
 provider feeds            build time                     serve time
@@ -15,17 +22,25 @@ GCP json      ─┘                │                      ├─ nginx (geoip
                                .mmdb  ──> CSV export ──┴─ Presto/Trino
 ```
 
-Coverage: the native `aws`/`azure`/`gcp` plugins parse providers' own feeds for
-`--source direct`, but `--source rezmoss-all` consumes **every** provider the
-rezmoss mirror tracks (~24: the big-three clouds plus Cloudflare, Fastly, Oracle,
-Linode, DigitalOcean, Vultr, GitHub, Zoom, Atlassian, and assorted bot networks).
+How much of the cloud you cover depends on where you pull the data from. The
+native `aws`/`azure`/`gcp` plugins parse each provider's own feeds when you ask
+for `--source direct`. But if you want the widest net, `--source rezmoss-all`
+pulls in **every** provider the rezmoss mirror tracks — about 24 of them: the
+big-three clouds plus Cloudflare, Fastly, Oracle, Linode, DigitalOcean, Vultr,
+GitHub, Zoom, Atlassian, and assorted bot networks.
 
-Two-binary split in spirit: a **builder** (`cloudattr build`, uses
-[`mmdbwriter`](https://github.com/maxmind/mmdbwriter)) and a **reader/server**
-(`cloudattr serve`, [`maxminddb-golang/v2`](https://github.com/oschwald/maxminddb-golang)).
-They share only the `.mmdb` file and the record schema.
+Architecturally it's two binaries in spirit. There's a **builder**
+(`cloudattr build`, built on [`mmdbwriter`](https://github.com/maxmind/mmdbwriter))
+and a **reader/server** (`cloudattr serve`, on
+[`maxminddb-golang/v2`](https://github.com/oschwald/maxminddb-golang)). They're
+deliberately decoupled: the only things they share are the `.mmdb` file and the
+record schema.
 
 ## Quick start
+
+Build the binary, then point it at whichever data source suits you. The most
+common path is the rezmoss CC0 mirror, but you can hit the providers' own URLs or
+work entirely offline from local fixtures:
 
 ```sh
 go build -o cloudattr ./cmd/cloudattr
@@ -40,7 +55,12 @@ go build -o cloudattr ./cmd/cloudattr
 # googlecloud, cloudflare, fastly, oracle, linode, digitalocean, vultr, github,
 # zoom, atlassian, and bot networks (~400k networks). Subset with --providers:
 ./cloudattr build --source rezmoss-all --providers aws,cloudflare,fastly --out edge.mmdb
+```
 
+Once you've got a database, querying it is the easy part — single IPs, batches
+from a file or stdin, plus a couple of housekeeping commands:
+
+```sh
 # Query
 ./cloudattr lookup 52.94.0.1                      # single
 ./cloudattr lookup -f ips.txt --format json       # batch from file (or '-' for stdin)
@@ -51,7 +71,8 @@ go build -o cloudattr ./cmd/cloudattr
 ./cloudattr serve --in cloud.mmdb --http :8080 --grpc :9090
 ```
 
-HTTP surface:
+The HTTP surface is small and predictable — one lookup endpoint (with a batch
+variant) plus the usual operational trio:
 
 ```
 GET /v1/lookup/{ip}        -> 200 {record} | 404 | 400
@@ -61,8 +82,10 @@ GET /healthz  GET /metrics  GET /version
 
 ## Record schema
 
-Every network maps to a **stable core** (uniformly queryable across providers)
-plus a provider-namespaced `ext` map for specialization. Stored in the MMDB as:
+Every network resolves to a **stable core** — the fields you can rely on being
+there and querying uniformly across providers — alongside a provider-namespaced
+`ext` map for the bits that are specific to one provider. In the MMDB it's stored
+like this:
 
 | key | type | notes |
 |---|---|---|
@@ -74,32 +97,38 @@ plus a provider-namespaced `ext` map for specialization. Stored in the MMDB as:
 | `synced_at` | uint64 | unix epoch of the feed |
 | `ext` | map<utf8,utf8> | provider-specific keys; strings so nginx can read them |
 
-**`services` is an array, not a scalar.** AWS lists the same CIDR once per
-owning service; the builder's merge inserter unions them rather than clobbering,
-so `52.94.0.0/22` ends up `["AMAZON","EC2","S3"]`. `ext` is kept
-`map<string,string>` so nginx (which can only reach string leaves) and every
-other consumer see the same shape.
+One detail worth calling out: **`services` is an array, not a scalar.** AWS lists
+the same CIDR once per owning service, so rather than have the last write win, the
+builder's merge inserter unions them — which is why `52.94.0.0/22` comes out as
+`["AMAZON","EC2","S3"]`. For similar reasons `ext` stays `map<string,string>`:
+nginx can only reach string leaves, and keeping everything as strings means it and
+every other consumer see exactly the same shape.
 
 ## Adding a provider plugin
 
-Implement `attribution.Plugin` — `Name()`, `Refs()`, and a pure `Parse(ref, r)`
-that yields normalized entries — then register it in `init()`. The builder owns
-all IO (rezmoss vs. direct, retries, caching); `Parse` is a pure function over
-bytes, trivially unit-tested against a checked-in fixture. Optionally implement
-`DirectPlugin.DirectRefs()` to support `--source direct`; providers without a
-stable direct URL (Azure) fall back to rezmoss automatically. See
-`plugins/aws/aws.go`.
+Adding a provider is meant to be a small, well-contained job. You implement
+`attribution.Plugin` — `Name()`, `Refs()`, and a pure `Parse(ref, r)` that yields
+normalized entries — and register it in `init()`. The builder owns all the messy
+IO (rezmoss vs. direct, retries, caching), which keeps `Parse` a pure function
+over bytes that's trivial to unit-test against a checked-in fixture. If your
+provider has a stable direct URL you can also implement `DirectPlugin.DirectRefs()`
+to support `--source direct`; the ones that don't (Azure) fall back to rezmoss
+automatically. `plugins/aws/aws.go` is the worked example to copy from.
 
 ## nginx — no custom module
 
-Point the existing `ngx_http_geoip2_module` at the same file; record keys become
-nginx variables. See [`deploy/nginx-geoip2.conf`](deploy/nginx-geoip2.conf).
+This is the part that's genuinely nice: there's nothing to build. Point the
+existing `ngx_http_geoip2_module` at the very same `.mmdb` file and the record
+keys show up as nginx variables. See
+[`deploy/nginx-geoip2.conf`](deploy/nginx-geoip2.conf).
 
 ### Testing it with PROXY protocol
 
-A self-contained config that takes the client IP from a PROXY-protocol header,
-attributes it, and writes the attribution into both the log line and the
-response — handy for verifying the MMDB end-to-end behind a real load balancer:
+If you're terminating connections behind a load balancer, you'll want to attribute
+the *real* client IP rather than the TCP peer. Here's a self-contained config that
+pulls the client IP out of a PROXY-protocol header, attributes it, and writes the
+result into both the log line and the response — handy for verifying the MMDB
+end-to-end behind a real LB:
 
 ```nginx
 load_module modules/ngx_http_geoip2_module.so;   # only if built as a dynamic module
@@ -129,15 +158,16 @@ http {
 }
 ```
 
-Drive it with curl, spoofing a cloud client IP in the PROXY header:
+Then drive it with curl, spoofing a cloud client IP in the PROXY header:
 
 ```sh
 curl --haproxy-protocol --haproxy-clientip 52.94.0.1 http://127.0.0.1:8080/whoami
 # -> aws us-east-1 AMAZON
 ```
 
-`internal/nginxtest` automates exactly this (skips cleanly when nginx, the
-geoip2 module, or curl's `--haproxy-clientip` are unavailable):
+And if you'd rather not wire that up by hand, `internal/nginxtest` automates
+exactly this flow (and skips cleanly when nginx, the geoip2 module, or curl's
+`--haproxy-clientip` aren't available):
 
 ```sh
 go test ./internal/nginxtest/ -v
@@ -145,8 +175,9 @@ go test ./internal/nginxtest/ -v
 
 ## Presto/Trino
 
-`cloudattr export` emits both the human-readable CIDR and integer range bounds —
-range joins on integers are the fastest pattern in Presto/Trino:
+For warehouse-side joins, `cloudattr export` emits both the human-readable CIDR
+and integer range bounds — range joins on integers are the fastest pattern in
+Presto/Trino, so that's what you'll usually join on:
 
 ```sql
 SELECT e.*, c.provider, c.region
@@ -154,21 +185,23 @@ FROM events e
 JOIN cloud_ranges c ON e.ip_int BETWEEN c.start_ip_int AND c.end_ip_int;
 ```
 
-IPv4 bounds fit a `BIGINT`; IPv6 bounds are full 128-bit decimals (use
-`DECIMAL`/`VARBINARY`, or split hi/lo warehouse-side).
+A sizing note: IPv4 bounds fit a `BIGINT`, but IPv6 bounds are full 128-bit
+decimals, so reach for `DECIMAL`/`VARBINARY`, or split them hi/lo warehouse-side.
 
 ## Sync pipeline (ops)
 
-`cloudattr build` is atomic: it writes `cloud.mmdb.tmp-*` in the target
-directory, walks it to validate, refuses to publish if the network count drops
-more than `--max-drop` (default 50%) versus the existing file, then renames into
-place. Servers pick it up via SIGHUP (`cloudattr serve`) or nginx `auto_reload`.
-The build epoch is stamped into MMDB metadata so `/version` and the warehouse
-partition agree.
+Builds are designed to be safe to run on a cron without babysitting them.
+`cloudattr build` is atomic: it writes `cloud.mmdb.tmp-*` in the target directory,
+walks it to validate, refuses to publish if the network count drops more than
+`--max-drop` (default 50%) versus the existing file, then renames into place.
+Servers pick the new file up via SIGHUP (`cloudattr serve`) or nginx
+`auto_reload`. The build epoch is stamped into MMDB metadata so `/version` and the
+warehouse partition always agree on which build they're looking at.
 
 ## Operational robustness (partial / corrupt data)
 
-The pipeline is built to survive disk-full, crashes, and partial copies:
+A lot of care went into making the pipeline survive the ugly cases — disk-full,
+crashes, half-finished copies. The guarantees, in detail:
 
 - **Atomic builds.** `cloudattr build` writes a temp file in the target
   directory, walks it to verify every record decodes, refuses to publish if the
@@ -195,6 +228,8 @@ The pipeline is built to survive disk-full, crashes, and partial copies:
 
 ## Implementation notes (resolved design open questions)
 
+A few decisions that came up along the way, and where they landed:
+
 - **Reader version:** pinned to `maxminddb-golang/v2` (the `Lookup(ip).Decode()` API).
 - **`ext` typing:** stored as `map<string,string>` so nginx can reach every leaf;
   empty values are dropped at build time.
@@ -213,7 +248,8 @@ The pipeline is built to survive disk-full, crashes, and partial copies:
 
 ## Licensing
 
-The MMDB `DatabaseType` is `Cloud-Attribution` — **not** `GeoIP*` (reserved +
-MaxMind trademark). Dependencies: `mmdbwriter` (Apache-2.0/MIT),
-`maxminddb-golang` (ISC). The rezmoss mirror is CC0, but upstream provider terms
-still apply to the data.
+One naming thing to be aware of: the MMDB `DatabaseType` is `Cloud-Attribution`,
+**not** `GeoIP*` — that prefix is reserved and a MaxMind trademark. On the
+dependency side, `mmdbwriter` is Apache-2.0/MIT and `maxminddb-golang` is ISC. The
+rezmoss mirror itself is CC0, but keep in mind the upstream providers' own terms
+still apply to the underlying data.
