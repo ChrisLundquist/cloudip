@@ -103,8 +103,14 @@ Three feeds ship today, all free and bulk-downloadable:
 
 Because `categories` union *across* providers (unlike `services`), you can even
 build cloud and reputation into one database and a single lookup will tell you
-both — e.g. "AWS us-east-1, and also a known Tor exit". Reputation entries are
-single hosts (`/32`/`/128`); everything else about the record schema is identical.
+both — e.g. "AWS us-east-1, and also a known Tor exit". Most reputation entries
+are single hosts (`/32`); Spamhaus DROP contributes CIDR netblocks. Everything
+else about the record schema is identical.
+
+Reputation data goes stale fast — a decommissioned C2 or exit node is a false
+positive waiting to happen — so per-entry `synced_at` tracks freshness where the
+feed provides it (Feodo uses `last_online`), and `cloudattr verify` reports the
+oldest/newest entry age so you can alert when a feed stops updating.
 
 ## Record schema
 

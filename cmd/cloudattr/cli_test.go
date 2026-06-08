@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
@@ -87,13 +88,60 @@ func TestRunLookupExitCodes(t *testing.T) {
 
 func withStdout(t *testing.T, fn func()) {
 	t.Helper()
+	captureStdout(t, fn)
+}
+
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
-	done := make(chan struct{})
-	go func() { _, _ = bytes.NewBuffer(nil).ReadFrom(r); close(done) }()
+	done := make(chan string, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = b.ReadFrom(r)
+		done <- b.String()
+	}()
 	fn()
 	w.Close()
-	<-done
+	return <-done
+}
+
+// TestRunLookupCategories asserts the lookup command surfaces reputation
+// categories in both JSON and text output.
+func TestRunLookupCategories(t *testing.T) {
+	pre := mustParsePrefix(t, "171.25.193.25/32")
+	entries := func(yield func(attribution.Entry, error) bool) {
+		yield(attribution.Entry{Network: pre, Record: attribution.Record{Provider: "tor", Categories: []string{"anonymizer", "tor_exit"}}}, nil)
+	}
+	path := filepath.Join(t.TempDir(), "reputation.mmdb")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attribution.Build(entries, f, attribution.BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	jsonOut := captureStdout(t, func() {
+		if err := runLookup([]string{"--in", path, "--format", "json", "171.25.193.25"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(jsonOut, `"categories"`) || !strings.Contains(jsonOut, "tor_exit") {
+		t.Errorf("json output missing categories: %s", jsonOut)
+	}
+
+	textOut := captureStdout(t, func() {
+		if err := runLookup([]string{"--in", path, "171.25.193.25"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// Text mode shows categories in place of services for reputation records.
+	if !strings.Contains(textOut, "anonymizer,tor_exit") {
+		t.Errorf("text output missing categories: %s", textOut)
+	}
 }

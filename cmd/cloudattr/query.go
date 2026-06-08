@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
 )
@@ -193,8 +194,21 @@ func runVerify(args []string) error {
 	fmt.Printf("build_epoch:   %d\n", db.BuildTime().Unix())
 	fmt.Printf("record_size:   %d\n", md.RecordSize)
 	fmt.Printf("networks:      %d (%d v4 / %d v6)\n", rep.Networks, rep.IPv4, rep.IPv6)
+	if !rep.Oldest.IsZero() {
+		fmt.Printf("entry age:     oldest %s (%s ago), newest %s\n",
+			rep.Oldest.Format("2006-01-02"), humanAge(rep.Oldest), rep.Newest.Format("2006-01-02"))
+	}
 	for prov, n := range rep.ByProvider {
 		fmt.Printf("  %-8s %d\n", prov, n)
 	}
 	return nil
+}
+
+// humanAge renders how long ago t was, coarsely (days).
+func humanAge(t time.Time) string {
+	d := time.Since(t)
+	if d < 24*time.Hour {
+		return "today"
+	}
+	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }

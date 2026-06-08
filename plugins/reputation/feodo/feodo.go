@@ -11,6 +11,7 @@ import (
 	"io"
 	"iter"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
@@ -34,11 +35,12 @@ func (Plugin) DirectRefs() []string { return []string{DirectURL} }
 
 // entry mirrors the subset of ipblocklist.json we consume.
 type entry struct {
-	IPAddress string `json:"ip_address"`
-	Port      int    `json:"port"`
-	Status    string `json:"status"`
-	FirstSeen string `json:"first_seen"`
-	Malware   string `json:"malware"`
+	IPAddress  string `json:"ip_address"`
+	Port       int    `json:"port"`
+	Status     string `json:"status"`
+	FirstSeen  string `json:"first_seen"`
+	LastOnline string `json:"last_online"`
+	Malware    string `json:"malware"`
 }
 
 // Parse normalizes the Feodo blocklist into /32 entries tagged "botnet_c2".
@@ -62,14 +64,19 @@ func (Plugin) Parse(ref string, r io.Reader) iter.Seq2[attribution.Entry, error]
 				ext["malware"] = e.Malware
 			}
 			if e.Status != "" {
-				ext["status"] = e.Status
+				ext["status"] = e.Status // "online"/"offline": liveness of the C2
+			}
+			if e.Port != 0 {
+				ext["port"] = strconv.Itoa(e.Port)
 			}
 			rec := attribution.Record{
 				Provider:   "abuse.ch",
 				Categories: []string{"botnet_c2", "malware"},
 				Source:     ref,
-				SyncedAt:   parseTime(e.FirstSeen),
-				Ext:        ext,
+				// synced_at tracks freshness: prefer last_online so a long-dead C2
+				// isn't stamped as if it were just observed; fall back to first_seen.
+				SyncedAt: feodoTime(e.LastOnline, e.FirstSeen),
+				Ext:      ext,
 			}
 			if !yield(attribution.Entry{Network: hostPrefix(addr), Record: rec}, nil) {
 				return
@@ -81,9 +88,16 @@ func (Plugin) Parse(ref string, r io.Reader) iter.Seq2[attribution.Entry, error]
 // hostPrefix returns addr as a single-host prefix (/32 or /128).
 func hostPrefix(a netip.Addr) netip.Prefix { return netip.PrefixFrom(a, a.BitLen()) }
 
-func parseTime(s string) time.Time {
-	if t, err := time.Parse("2006-01-02 15:04:05", s); err == nil {
-		return t.UTC()
+// feodoTime returns the freshest parseable timestamp from the candidates. The
+// feed uses "2006-01-02 15:04:05" for first_seen and a date-only "2006-01-02"
+// for last_online.
+func feodoTime(candidates ...string) time.Time {
+	for _, s := range candidates {
+		for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02"} {
+			if t, err := time.Parse(layout, s); err == nil {
+				return t.UTC()
+			}
+		}
 	}
 	return time.Time{}
 }

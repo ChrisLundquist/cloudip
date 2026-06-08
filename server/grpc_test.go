@@ -32,6 +32,15 @@ func TestGRPCLookupAndVersion(t *testing.T) {
 		t.Error("expected miss for 203.0.113.1")
 	}
 
+	// Reputation host: categories must populate over gRPC.
+	repu, err := g.Lookup(context.Background(), &pb.LookupRequest{Ip: "171.25.193.25"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repu.Record.GetProvider() != "tor" || len(repu.Record.GetCategories()) != 2 {
+		t.Errorf("reputation record = %+v", repu.Record)
+	}
+
 	// invalid ip -> error
 	if _, err := g.Lookup(context.Background(), &pb.LookupRequest{Ip: "nope"}); err == nil {
 		t.Error("expected error for invalid ip")

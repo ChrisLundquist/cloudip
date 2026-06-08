@@ -325,6 +325,61 @@ func TestCategoriesUnionAcrossProviders(t *testing.T) {
 	}
 }
 
+// TestCategoriesUnionReverseOrder is the symmetric case: the reputation record
+// is inserted FIRST, then the cloud record. Categories must still survive even
+// though the cloud record is the later (losing-identity) writer.
+func TestCategoriesUnionReverseOrder(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "tor", Categories: []string{"tor_exit"}}},
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, _, _ := db.LookupString("52.94.0.1")
+	// First writer (tor) keeps identity; the later cloud record does not overwrite it.
+	if rec.Provider != "tor" {
+		t.Errorf("provider = %q, want tor (first writer)", rec.Provider)
+	}
+	if strings.Join(rec.Categories, ",") != "tor_exit" {
+		t.Errorf("categories = %v, want tor_exit preserved", rec.Categories)
+	}
+}
+
+// TestExportCSVCategoriesColumn asserts the categories column exists in the
+// header at the right position and is populated for a reputation row.
+func TestExportCSVCategoriesColumn(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "171.25.193.25/32"), Record: Record{Provider: "tor", Categories: []string{"anonymizer", "tor_exit"}}},
+	}
+	var mmdb bytes.Buffer
+	if _, err := Build(entriesFrom(es), &mmdb, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(mmdb.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var csv bytes.Buffer
+	if _, err := ExportCSV(db, &csv); err != nil {
+		t.Fatal(err)
+	}
+	out := csv.String()
+	if !strings.Contains(out, "provider,region,services,categories,ipv6,source,synced_at") {
+		t.Errorf("header missing categories column in position:\n%s", out)
+	}
+	if !strings.Contains(out, `,tor,,,"anonymizer,tor_exit",false,`) {
+		t.Errorf("reputation row categories wrong:\n%s", out)
+	}
+}
+
 // TestPureCloudHasNoCategories confirms cloud-only records carry no categories
 // key (the cloud storage path stays byte-clean).
 func TestPureCloudHasNoCategories(t *testing.T) {

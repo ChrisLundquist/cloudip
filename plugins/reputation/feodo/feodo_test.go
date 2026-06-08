@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
 )
@@ -39,8 +40,14 @@ func TestParse(t *testing.T) {
 	if e.Record.Ext["malware"] != "Emotet" {
 		t.Errorf("ext malware = %q", e.Record.Ext["malware"])
 	}
-	if e.Record.SyncedAt.IsZero() {
-		t.Error("first_seen not parsed")
+	// synced_at should reflect freshness (last_online 2026-03-07), not the much
+	// older first_seen (2022-06-04).
+	wantFresh, _ := time.Parse("2006-01-02", "2026-03-07")
+	if !e.Record.SyncedAt.Equal(wantFresh) {
+		t.Errorf("synced_at = %v, want last_online %v", e.Record.SyncedAt, wantFresh)
+	}
+	if e.Record.Ext["status"] != "offline" {
+		t.Errorf("status ext = %q, want offline", e.Record.Ext["status"])
 	}
 	// Reputation records carry no services.
 	if len(e.Record.Services) != 0 {

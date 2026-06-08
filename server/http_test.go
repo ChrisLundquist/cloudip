@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
@@ -19,6 +20,8 @@ func buildTestDB(t *testing.T) string {
 	t.Helper()
 	es := []attribution.Entry{
 		{Network: netPrefix(t, "52.94.0.0/22"), Record: attribution.Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2", "S3"}}},
+		// A reputation host so serving surfaces can be tested for categories.
+		{Network: netPrefix(t, "171.25.193.25/32"), Record: attribution.Record{Provider: "tor", Categories: []string{"anonymizer", "tor_exit"}}},
 	}
 	var buf bytes.Buffer
 	if _, err := attribution.Build(seq(es), &buf, attribution.BuildOptions{BuildEpoch: 1718000000}); err != nil {
@@ -110,6 +113,36 @@ func seq(es []attribution.Entry) iter.Seq2[attribution.Entry, error] {
 				return
 			}
 		}
+	}
+}
+
+// TestHTTPCategories asserts reputation categories serialize over HTTP and that
+// a pure-cloud record omits the categories key entirely (the omitempty guarantee).
+func TestHTTPCategories(t *testing.T) {
+	svc, err := NewService(buildTestDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	h := NewHTTPHandler(svc)
+
+	// Reputation host: categories present.
+	rec := do(t, h, "/v1/lookup/171.25.193.25")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var jr jsonRecord
+	if err := json.Unmarshal(rec.Body.Bytes(), &jr); err != nil {
+		t.Fatal(err)
+	}
+	if jr.Provider != "tor" || strings.Join(jr.Categories, ",") != "anonymizer,tor_exit" {
+		t.Errorf("reputation record = %+v", jr)
+	}
+
+	// Pure-cloud host: the raw JSON must NOT contain a "categories" key.
+	cloud := do(t, h, "/v1/lookup/52.94.0.1")
+	if bytes.Contains(cloud.Body.Bytes(), []byte("categories")) {
+		t.Errorf("cloud record leaked categories key: %s", cloud.Body.String())
 	}
 }
 
