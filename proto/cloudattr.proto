@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package cloudattr.v1;
+
+option go_package = "github.com/ChrisLundquist/cloudip/proto/cloudattrpb;cloudattrpb";
+
+// CloudAttribution resolves IP addresses to the cloud provider, region, and
+// services that own them.
+service CloudAttribution {
+  // Lookup resolves a single IP.
+  rpc Lookup(LookupRequest) returns (LookupResult);
+  // BatchLookup resolves a stream of IPs, one result per request.
+  rpc BatchLookup(stream LookupRequest) returns (stream LookupResult);
+  // Version returns the build epoch of the loaded database.
+  rpc Version(VersionRequest) returns (VersionResponse);
+}
+
+message LookupRequest {
+  string ip = 1;
+}
+
+// Record is the stable attribution core plus a provider-namespaced ext map.
+message Record {
+  string provider = 1;
+  string region = 2;
+  repeated string services = 3;
+  bool ipv6 = 4;
+  string source = 5;
+  int64 synced_at = 6; // unix epoch of the feed
+  map<string, string> ext = 7;
+}
+
+message LookupResult {
+  string ip = 1;
+  Record record = 2;
+  bool found = 3;
+  string error = 4; // non-empty if this IP could not be looked up (e.g. malformed)
+}
+
+message VersionRequest {}
+
+message VersionResponse {
+  int64 build_epoch = 1;
+  string database_type = 2;
+  uint64 node_count = 3;
+}

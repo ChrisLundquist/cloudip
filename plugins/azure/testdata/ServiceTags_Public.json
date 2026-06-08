@@ -1,0 +1,31 @@
+{
+  "changeNumber": 321,
+  "cloud": "Public",
+  "values": [
+    {
+      "name": "Storage.WestUS",
+      "id": "Storage.WestUS",
+      "properties": {
+        "region": "westus",
+        "platform": "Azure",
+        "systemService": "AzureStorage",
+        "addressPrefixes": [
+          "13.66.176.0/20",
+          "2603:1030:a07::/48"
+        ]
+      }
+    },
+    {
+      "name": "AzureCloud.eastus",
+      "id": "AzureCloud.eastus",
+      "properties": {
+        "region": "eastus",
+        "platform": "Azure",
+        "systemService": "",
+        "addressPrefixes": [
+          "20.42.0.0/16"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# Build artifacts
+/bin/
+/cloudattr
+cmd/cloudattr/cloudattr
+
+# Binary MMDB databases — built artifacts, never committed (can be large)
+*.mmdb
+*.mmdb.tmp-*
+
+# CSV exports
+*.csv
