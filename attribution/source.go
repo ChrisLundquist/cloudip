@@ -17,8 +17,10 @@ import (
 // like "aws/ip-ranges.json"); with BaseURL empty, the ref must be an absolute
 // URL (used for --source direct, where plugins return provider URLs).
 type HTTPSource struct {
-	BaseURL string       // optional; joined with ref when set
-	Client  *http.Client // optional; defaults to a 30s-timeout client
+	BaseURL  string        // optional; joined with ref when set
+	Client   *http.Client  // optional; defaults to a 30s-timeout client
+	Attempts int           // optional; total tries on transient failures (default 3)
+	Backoff  time.Duration // optional; base backoff between tries (default 500ms)
 }
 
 // rezmossRawBase is the default CC0 mirror of per-provider IP-range files.
@@ -38,25 +40,58 @@ func (s *HTTPSource) client() *http.Client {
 	return &http.Client{Timeout: 30 * time.Second}
 }
 
-// Open fetches ref over HTTP. The caller owns closing the returned stream.
+// Open fetches ref over HTTP, retrying transient failures (network errors and
+// 5xx / 429) with backoff so a daily sync survives a flaky mirror. The caller
+// owns closing the returned stream. A non-retryable status (e.g. 404) fails fast.
 func (s *HTTPSource) Open(ctx context.Context, ref string) (io.ReadCloser, error) {
 	url := ref
 	if s.BaseURL != "" {
 		url = strings.TrimSuffix(s.BaseURL, "/") + "/" + strings.TrimPrefix(ref, "/")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build request for %q: %w", url, err)
+
+	attempts := s.Attempts
+	if attempts <= 0 {
+		attempts = 3
 	}
-	resp, err := s.client().Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %q: %w", url, err)
+	backoff := s.Backoff
+	if backoff <= 0 {
+		backoff = 500 * time.Millisecond
 	}
-	if resp.StatusCode != http.StatusOK {
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff * time.Duration(attempt-1)):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build request for %q: %w", url, err) // not retryable
+		}
+		resp, err := s.client().Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("fetch %q: %w", url, err)
+			continue // network error: retry
+		}
+		if resp.StatusCode == http.StatusOK {
+			return resp.Body, nil
+		}
 		resp.Body.Close()
-		return nil, fmt.Errorf("fetch %q: unexpected status %s", url, resp.Status)
+		if !retryableStatus(resp.StatusCode) {
+			return nil, fmt.Errorf("fetch %q: unexpected status %s", url, resp.Status)
+		}
+		lastErr = fmt.Errorf("fetch %q: status %s", url, resp.Status)
 	}
-	return resp.Body, nil
+	return nil, fmt.Errorf("after %d attempts: %w", attempts, lastErr)
+}
+
+// retryableStatus reports whether an HTTP status warrants a retry: 429 and 5xx
+// are transient; other 4xx are caller errors that won't improve on retry.
+func retryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
 }
 
 // FileSource resolves refs as files under Dir (or as absolute paths when Dir is
