@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +131,54 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestRunBuildReputationDefaultOut guards the footgun fix: a --reputation build
+// with no --out writes reputation.mmdb, NOT cloud.mmdb, so it can't clobber a
+// cloud database that happens to sit in the working directory.
+func TestRunBuildReputationDefaultOut(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	if err := os.MkdirAll(filepath.Join(feeds, "tor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(feeds, "tor", "exit-list.txt"), []byte("171.25.193.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed a cloud.mmdb in the working dir that must be left untouched.
+	cloudPath := filepath.Join(dir, "cloud.mmdb")
+	if _, err := attribution.BuildFile(seqOne(t, "8.8.8.0/24", "aws"), cloudPath, attribution.BuildOptions{}, nil, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	cloudBefore, _ := os.ReadFile(cloudPath)
+
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	// No --out, no --providers: builds all reputation feeds (here just tor via fixtures).
+	if err := runBuild([]string{"--reputation", "--fixtures", feeds, "--providers", "tor"}); err != nil {
+		t.Fatalf("runBuild: %v", err)
+	}
+
+	if _, err := os.Stat("reputation.mmdb"); err != nil {
+		t.Errorf("expected reputation.mmdb to be created: %v", err)
+	}
+	cloudAfter, _ := os.ReadFile(cloudPath)
+	if !bytes.Equal(cloudBefore, cloudAfter) {
+		t.Error("reputation build clobbered cloud.mmdb")
+	}
+}
+
+func seqOne(t *testing.T, cidr, provider string) func(func(attribution.Entry, error) bool) {
+	t.Helper()
+	pre := mustParsePrefix(t, cidr)
+	return func(yield func(attribution.Entry, error) bool) {
+		yield(attribution.Entry{Network: pre, Record: attribution.Record{Provider: provider, Services: []string{"X"}}}, nil)
+	}
 }
 
 // TestRunBuildProvidersFilter checks --providers subsets the rezmoss-all feed by
