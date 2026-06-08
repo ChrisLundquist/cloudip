@@ -12,6 +12,58 @@ import (
 	"time"
 )
 
+func TestDigestSourceRecordsAndVerifies(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "feed.json"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// sha256("hello")
+	const helloSum = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+
+	// Record path: digest is reported and content passes through.
+	var gotRef, gotSum string
+	ds := DigestSource{Inner: FileSource{Dir: dir}, Record: func(ref, sha string) { gotRef, gotSum = ref, sha }}
+	rc, err := ds.Open(context.Background(), "feed.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(b) != "hello" {
+		t.Errorf("content = %q", b)
+	}
+	if gotRef != "feed.json" || gotSum != helloSum {
+		t.Errorf("recorded ref=%q sum=%q", gotRef, gotSum)
+	}
+
+	// Pin match: succeeds.
+	okPin := DigestSource{Inner: FileSource{Dir: dir}, Pins: map[string]string{"feed.json": helloSum}}
+	if rc, err := okPin.Open(context.Background(), "feed.json"); err != nil {
+		t.Errorf("matching pin should pass: %v", err)
+	} else {
+		rc.Close()
+	}
+
+	// Pin mismatch: fails closed.
+	badPin := DigestSource{Inner: FileSource{Dir: dir}, Pins: map[string]string{"feed.json": "deadbeef"}}
+	if _, err := badPin.Open(context.Background(), "feed.json"); err == nil {
+		t.Error("mismatched pin should fail the fetch")
+	}
+}
+
+func TestRezmossBaseEnvOverride(t *testing.T) {
+	if got := RezmossBase(); got != rezmossRawBase {
+		t.Errorf("default base = %q", got)
+	}
+	t.Setenv(RezmossBaseEnv, "https://mirror.internal/cloudip/")
+	if got := RezmossBase(); got != "https://mirror.internal/cloudip/" {
+		t.Errorf("override base = %q", got)
+	}
+	if NewRezmossSource().BaseURL != "https://mirror.internal/cloudip/" {
+		t.Error("NewRezmossSource did not pick up the override")
+	}
+}
+
 func TestHTTPSourceRetriesTransient(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

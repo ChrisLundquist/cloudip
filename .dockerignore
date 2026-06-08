@@ -1,0 +1,6 @@
+.git
+bin/
+*.mmdb
+*.mmdb.tmp-*
+*.csv
+cloudattr

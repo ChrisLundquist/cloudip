@@ -79,6 +79,19 @@ func rezmossFeeds(p Plugin, src Source) []Feed {
 	return feeds
 }
 
+// WithDigest wraps a resolver so every feed's Source is wrapped in a
+// DigestSource with the given pins/record. Use it to hash and optionally verify
+// all feeds in a build regardless of which resolver produced them.
+func WithDigest(resolve PluginSource, pins map[string]string, record func(ref, sha string)) PluginSource {
+	return func(p Plugin) []Feed {
+		feeds := resolve(p)
+		for i := range feeds {
+			feeds[i].Source = DigestSource{Inner: feeds[i].Source, Pins: pins, Record: record}
+		}
+		return feeds
+	}
+}
+
 // Collect ingests every feed for the given plugins and yields a single
 // normalized entry stream. The builder owns IO here; each ParseFunc stays pure.
 // Open/parse failures are yielded as errors; Build aborts on the first one.
@@ -92,6 +105,62 @@ func Collect(ctx context.Context, plugins []Plugin, resolve PluginSource) iter.S
 			}
 		}
 	}
+}
+
+// FeedFailure records a feed that could not be ingested (open or parse error).
+type FeedFailure struct {
+	Provider string
+	Ref      string
+	Err      error
+}
+
+func (f FeedFailure) String() string {
+	return fmt.Sprintf("%s (%s): %v", f.Provider, f.Ref, f.Err)
+}
+
+// CollectResilient is like Collect but isolates per-feed failures: an open or
+// parse error for one feed is reported to onFail and that feed is skipped, while
+// entries from healthy feeds still flow. Each feed is buffered, so a feed that
+// errors partway (e.g. a truncated download) contributes nothing rather than a
+// partial set. Callers pair this with the drop/skip guards in BuildFile to refuse
+// publishing when too much data is lost.
+func CollectResilient(ctx context.Context, plugins []Plugin, resolve PluginSource, onFail func(FeedFailure)) iter.Seq2[Entry, error] {
+	return func(yield func(Entry, error) bool) {
+		for _, p := range plugins {
+			for _, f := range resolve(p) {
+				buf, err := bufferFeed(ctx, f)
+				if err != nil {
+					if onFail != nil {
+						onFail(FeedFailure{Provider: p.Name(), Ref: f.Ref, Err: err})
+					}
+					continue // isolate: skip this feed, keep the others
+				}
+				for _, e := range buf {
+					if !yield(e, nil) {
+						return
+					}
+				}
+			}
+		}
+	}
+}
+
+// bufferFeed reads a whole feed into memory, returning its entries only if the
+// feed parses cleanly end-to-end; any error discards the partial result.
+func bufferFeed(ctx context.Context, f Feed) ([]Entry, error) {
+	rc, err := f.Source.Open(ctx, f.Ref)
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	var out []Entry
+	for e, perr := range f.Parse(f.Ref, rc) {
+		if perr != nil {
+			return nil, perr
+		}
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // collectFeed opens one feed and streams its parsed entries, always closing the

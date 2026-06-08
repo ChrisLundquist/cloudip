@@ -1,0 +1,12 @@
+# Cron alternative to the systemd timer. Rebuilds daily and reloads the server.
+# Install: `crontab -e` (as the cloudattr user) and add the line below.
+#
+# The build is atomic and fail-closed: a failed fetch/parse leaves the previous
+# cloud.mmdb untouched, so a bad run never takes the server down. `pkill -HUP`
+# tells a running `cloudattr serve` to hot-swap the new file.
+#
+# Rebuild every day at 03:17 (offset from the hour to avoid mirror thundering herd):
+17 3 * * *  cd /var/lib/cloudattr && /usr/local/bin/cloudattr build --out cloud.mmdb --csv cloud.csv >> /var/log/cloudattr/build.log 2>&1 && pkill -HUP -f 'cloudattr serve'
+
+# To build from an internal mirror, prefix with the env override:
+# 17 3 * * *  CLOUDIP_REZMOSS_BASE=https://mirror.internal/cloudip/ /usr/local/bin/cloudattr build --out /var/lib/cloudattr/cloud.mmdb ...

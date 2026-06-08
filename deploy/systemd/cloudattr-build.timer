@@ -1,0 +1,13 @@
+# Refresh the database daily (with a randomized delay to be kind to the mirror).
+# Install: copy to /etc/systemd/system/, then:
+#   systemctl daemon-reload && systemctl enable --now cloudattr-build.timer
+[Unit]
+Description=Daily cloudattr database rebuild
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
