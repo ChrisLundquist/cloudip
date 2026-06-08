@@ -55,9 +55,13 @@ func (g *GRPCServer) BatchLookup(stream pb.CloudAttribution_BatchLookupServer) e
 
 // Version reports the loaded database's build epoch and metadata.
 func (g *GRPCServer) Version(context.Context, *pb.VersionRequest) (*pb.VersionResponse, error) {
-	md := g.svc.DB().Metadata()
+	db := g.svc.DB()
+	if db == nil {
+		return nil, status.Error(codes.Unavailable, "no database loaded")
+	}
+	md := db.Metadata()
 	return &pb.VersionResponse{
-		BuildEpoch:   g.svc.DB().BuildTime().Unix(),
+		BuildEpoch:   db.BuildTime().Unix(),
 		DatabaseType: md.DatabaseType,
 		NodeCount:    uint64(md.NodeCount),
 	}, nil
@@ -70,12 +74,13 @@ func recordToProto(r attribution.Record) *pb.Record {
 		synced = r.SyncedAt.Unix()
 	}
 	return &pb.Record{
-		Provider: r.Provider,
-		Region:   r.Region,
-		Services: r.Services,
-		Ipv6:     r.IPv6,
-		Source:   r.Source,
-		SyncedAt: synced,
-		Ext:      r.Ext,
+		Provider:   r.Provider,
+		Region:     r.Region,
+		Services:   r.Services,
+		Categories: r.Categories,
+		Ipv6:       r.IPv6,
+		Source:     r.Source,
+		SyncedAt:   synced,
+		Ext:        r.Ext,
 	}
 }

@@ -290,6 +290,117 @@ func TestExportCSVIPv6Bounds(t *testing.T) {
 	}
 }
 
+// TestCategoriesUnionAcrossProviders is the reputation overlay guarantee: when a
+// cloud record and a reputation record (or two reputation feeds) cover the same
+// prefix, categories union even though provider/services keep the first writer.
+func TestCategoriesUnionAcrossProviders(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}},
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "tor", Categories: []string{"tor_exit"}}},
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "abuse.ch", Categories: []string{"botnet_c2"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, found, _ := db.LookupString("52.94.0.1")
+	if !found {
+		t.Fatal("not found")
+	}
+	// First writer keeps provider/region/services...
+	if rec.Provider != "aws" || rec.Region != "us-east-1" {
+		t.Errorf("identity changed: %+v", rec)
+	}
+	if strings.Join(rec.Services, ",") != "EC2" {
+		t.Errorf("services = %v, want only EC2", rec.Services)
+	}
+	// ...but categories accumulate across all providers.
+	if got := strings.Join(rec.Categories, ","); got != "botnet_c2,tor_exit" {
+		t.Errorf("categories = %q, want botnet_c2,tor_exit (sorted union)", got)
+	}
+}
+
+// TestCategoriesUnionReverseOrder is the symmetric case: the reputation record
+// is inserted FIRST, then the cloud record. Categories must still survive even
+// though the cloud record is the later (losing-identity) writer.
+func TestCategoriesUnionReverseOrder(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "tor", Categories: []string{"tor_exit"}}},
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, _, _ := db.LookupString("52.94.0.1")
+	// First writer (tor) keeps identity; the later cloud record does not overwrite it.
+	if rec.Provider != "tor" {
+		t.Errorf("provider = %q, want tor (first writer)", rec.Provider)
+	}
+	if strings.Join(rec.Categories, ",") != "tor_exit" {
+		t.Errorf("categories = %v, want tor_exit preserved", rec.Categories)
+	}
+}
+
+// TestExportCSVCategoriesColumn asserts the categories column exists in the
+// header at the right position and is populated for a reputation row.
+func TestExportCSVCategoriesColumn(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "171.25.193.25/32"), Record: Record{Provider: "tor", Categories: []string{"anonymizer", "tor_exit"}}},
+	}
+	var mmdb bytes.Buffer
+	if _, err := Build(entriesFrom(es), &mmdb, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(mmdb.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var csv bytes.Buffer
+	if _, err := ExportCSV(db, &csv); err != nil {
+		t.Fatal(err)
+	}
+	out := csv.String()
+	if !strings.Contains(out, "provider,region,services,categories,ipv6,source,synced_at") {
+		t.Errorf("header missing categories column in position:\n%s", out)
+	}
+	if !strings.Contains(out, `,tor,,,"anonymizer,tor_exit",false,`) {
+		t.Errorf("reputation row categories wrong:\n%s", out)
+	}
+}
+
+// TestPureCloudHasNoCategories confirms cloud-only records carry no categories
+// key (the cloud storage path stays byte-clean).
+func TestPureCloudHasNoCategories(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, _, _ := db.LookupString("52.94.0.1")
+	if len(rec.Categories) != 0 {
+		t.Errorf("cloud record gained categories: %v", rec.Categories)
+	}
+}
+
 func TestBuildVersionAndVerify(t *testing.T) {
 	es := []Entry{
 		{Network: mustPrefix(t, "13.248.0.0/16"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},

@@ -116,11 +116,21 @@ func collectFeed(ctx context.Context, provider string, f Feed, yield func(Entry,
 	return true
 }
 
-// SelectPlugins returns the registered plugins named in `names`, or all of them
+// SelectPlugins returns the registered cloud plugins named in `names`, or all of
+// them when `names` is empty (see selectFrom).
+func SelectPlugins(names []string) ([]Plugin, error) {
+	return selectFrom(Plugins(), names)
+}
+
+// SelectReputationPlugins is SelectPlugins over the reputation registry.
+func SelectReputationPlugins(names []string) ([]Plugin, error) {
+	return selectFrom(ReputationPlugins(), names)
+}
+
+// selectFrom returns the plugins named in `names` from reg, or all of them
 // (sorted by name for deterministic builds) when `names` is empty. It errors on
 // an unknown name.
-func SelectPlugins(names []string) ([]Plugin, error) {
-	reg := Plugins()
+func selectFrom(reg map[string]Plugin, names []string) ([]Plugin, error) {
 	if len(names) == 0 {
 		out := make([]Plugin, 0, len(reg))
 		for _, p := range reg {

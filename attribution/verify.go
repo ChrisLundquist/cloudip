@@ -1,6 +1,9 @@
 package attribution
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // VerifyReport summarizes a tree walk: total networks and a per-provider count.
 type VerifyReport struct {
@@ -8,6 +11,13 @@ type VerifyReport struct {
 	ByProvider map[string]int // network count per provider
 	IPv4       int
 	IPv6       int
+
+	// Oldest and Newest are the min/max non-zero per-entry synced_at across the
+	// tree. They are the zero time when no record carries a timestamp. For
+	// reputation data especially, Oldest is the staleness signal an operator
+	// should alert on (a feed that stopped updating ages out here).
+	Oldest time.Time
+	Newest time.Time
 }
 
 // Verify walks the whole tree, validates every record decodes, and returns
@@ -28,6 +38,14 @@ func Verify(db *DB) (VerifyReport, error) {
 			rep.IPv6++
 		} else {
 			rep.IPv4++
+		}
+		if t := nr.Record.SyncedAt; !t.IsZero() {
+			if rep.Oldest.IsZero() || t.Before(rep.Oldest) {
+				rep.Oldest = t
+			}
+			if t.After(rep.Newest) {
+				rep.Newest = t
+			}
 		}
 	}
 	if rep.Networks == 0 {

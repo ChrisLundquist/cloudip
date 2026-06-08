@@ -12,13 +12,14 @@ import (
 // jsonRecord is the HTTP JSON shape of a record. synced_at is a unix epoch so
 // the wire form matches the MMDB and gRPC representations.
 type jsonRecord struct {
-	Provider string            `json:"provider"`
-	Region   string            `json:"region"`
-	Services []string          `json:"services"`
-	IPv6     bool              `json:"ipv6"`
-	Source   string            `json:"source"`
-	SyncedAt int64             `json:"synced_at"`
-	Ext      map[string]string `json:"ext,omitempty"`
+	Provider   string            `json:"provider"`
+	Region     string            `json:"region"`
+	Services   []string          `json:"services"`
+	Categories []string          `json:"categories,omitempty"`
+	IPv6       bool              `json:"ipv6"`
+	Source     string            `json:"source"`
+	SyncedAt   int64             `json:"synced_at"`
+	Ext        map[string]string `json:"ext,omitempty"`
 }
 
 func toJSON(r attribution.Record) jsonRecord {
@@ -31,7 +32,7 @@ func toJSON(r attribution.Record) jsonRecord {
 		svcs = []string{}
 	}
 	return jsonRecord{
-		Provider: r.Provider, Region: r.Region, Services: svcs,
+		Provider: r.Provider, Region: r.Region, Services: svcs, Categories: r.Categories,
 		IPv6: r.IPv6, Source: r.Source, SyncedAt: synced, Ext: r.Ext,
 	}
 }
@@ -114,6 +115,10 @@ func (s *Service) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	if s.DB() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no database loaded"})
+		return
+	}
 	md := s.DB().Metadata()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"build_epoch":   s.DB().BuildTime().Unix(),
@@ -132,7 +137,9 @@ func (s *Service) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# TYPE cloudattr_lookups_total counter\ncloudattr_lookups_total %d\n", st.Lookups)
 	fmt.Fprintf(w, "# TYPE cloudattr_hits_total counter\ncloudattr_hits_total %d\n", st.Hits)
 	fmt.Fprintf(w, "# TYPE cloudattr_errors_total counter\ncloudattr_errors_total %d\n", st.Errors)
-	fmt.Fprintf(w, "# TYPE cloudattr_build_epoch gauge\ncloudattr_build_epoch %d\n", s.DB().BuildTime().Unix())
+	if db := s.DB(); db != nil {
+		fmt.Fprintf(w, "# TYPE cloudattr_build_epoch gauge\ncloudattr_build_epoch %d\n", db.BuildTime().Unix())
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

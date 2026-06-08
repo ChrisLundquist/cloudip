@@ -75,6 +75,7 @@ type Record struct {
 	Source        string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
 	SyncedAt      int64                  `protobuf:"varint,6,opt,name=synced_at,json=syncedAt,proto3" json:"synced_at,omitempty"` // unix epoch of the feed
 	Ext           map[string]string      `protobuf:"bytes,7,rep,name=ext,proto3" json:"ext,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Categories    []string               `protobuf:"bytes,8,rep,name=categories,proto3" json:"categories,omitempty"` // reputation tags: botnet_c2, tor_exit, drop, ...
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -154,6 +155,13 @@ func (x *Record) GetSyncedAt() int64 {
 func (x *Record) GetExt() map[string]string {
 	if x != nil {
 		return x.Ext
+	}
+	return nil
+}
+
+func (x *Record) GetCategories() []string {
+	if x != nil {
+		return x.Categories
 	}
 	return nil
 }
@@ -328,7 +336,7 @@ const file_cloudattr_proto_rawDesc = "" +
 	"\n" +
 	"\x0fcloudattr.proto\x12\fcloudattr.v1\"\x1f\n" +
 	"\rLookupRequest\x12\x0e\n" +
-	"\x02ip\x18\x01 \x01(\tR\x02ip\"\x8a\x02\n" +
+	"\x02ip\x18\x01 \x01(\tR\x02ip\"\xaa\x02\n" +
 	"\x06Record\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1a\n" +
@@ -336,7 +344,10 @@ const file_cloudattr_proto_rawDesc = "" +
 	"\x04ipv6\x18\x04 \x01(\bR\x04ipv6\x12\x16\n" +
 	"\x06source\x18\x05 \x01(\tR\x06source\x12\x1b\n" +
 	"\tsynced_at\x18\x06 \x01(\x03R\bsyncedAt\x12/\n" +
-	"\x03ext\x18\a \x03(\v2\x1d.cloudattr.v1.Record.ExtEntryR\x03ext\x1a6\n" +
+	"\x03ext\x18\a \x03(\v2\x1d.cloudattr.v1.Record.ExtEntryR\x03ext\x12\x1e\n" +
+	"\n" +
+	"categories\x18\b \x03(\tR\n" +
+	"categories\x1a6\n" +
 	"\bExtEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"x\n" +

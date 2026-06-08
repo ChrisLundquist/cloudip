@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
+	_ "github.com/ChrisLundquist/cloudip/plugins/reputation/all" // register reputation plugins for the build test
 )
 
 // TestRunBuildRezmossAllFixture drives runBuild end-to-end through the
@@ -71,6 +73,111 @@ func TestRunBuildRezmossAllFixture(t *testing.T) {
 		if strings.Contains(e.Name(), ".tmp-") {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
+	}
+}
+
+// TestRunBuildReputation drives runBuild --reputation against local fixtures and
+// checks the resulting DB attributes IPs to reputation categories.
+func TestRunBuildReputation(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(feeds, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("feodo/ipblocklist.json", `[{"ip_address":"162.243.103.246","port":8080,"status":"offline","first_seen":"2022-06-04 21:24:53","malware":"Emotet"}]`)
+	mustWrite("spamhaus/drop.txt", "; header\n1.10.16.0/20 ; SBL256894\n")
+	mustWrite("tor/exit-list.txt", "171.25.193.25\n")
+
+	out := filepath.Join(dir, "reputation.mmdb")
+	if err := runBuild([]string{"--reputation", "--fixtures", feeds, "--out", out}); err != nil {
+		t.Fatalf("runBuild --reputation: %v", err)
+	}
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cases := map[string]struct{ provider, category string }{
+		"162.243.103.246": {"abuse.ch", "botnet_c2"},
+		"1.10.16.1":       {"spamhaus", "drop"},
+		"171.25.193.25":   {"tor", "tor_exit"},
+	}
+	for ip, want := range cases {
+		rec, found, err := db.LookupString(ip)
+		if err != nil || !found {
+			t.Errorf("%s: found=%v err=%v", ip, found, err)
+			continue
+		}
+		if rec.Provider != want.provider {
+			t.Errorf("%s provider = %q, want %q", ip, rec.Provider, want.provider)
+		}
+		if !contains(rec.Categories, want.category) {
+			t.Errorf("%s categories = %v, want to contain %q", ip, rec.Categories, want.category)
+		}
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRunBuildReputationDefaultOut guards the footgun fix: a --reputation build
+// with no --out writes reputation.mmdb, NOT cloud.mmdb, so it can't clobber a
+// cloud database that happens to sit in the working directory.
+func TestRunBuildReputationDefaultOut(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	if err := os.MkdirAll(filepath.Join(feeds, "tor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(feeds, "tor", "exit-list.txt"), []byte("171.25.193.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-seed a cloud.mmdb in the working dir that must be left untouched.
+	cloudPath := filepath.Join(dir, "cloud.mmdb")
+	if _, err := attribution.BuildFile(seqOne(t, "8.8.8.0/24", "aws"), cloudPath, attribution.BuildOptions{}, nil, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	cloudBefore, _ := os.ReadFile(cloudPath)
+
+	cwd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+
+	// No --out, no --providers: builds all reputation feeds (here just tor via fixtures).
+	if err := runBuild([]string{"--reputation", "--fixtures", feeds, "--providers", "tor"}); err != nil {
+		t.Fatalf("runBuild: %v", err)
+	}
+
+	if _, err := os.Stat("reputation.mmdb"); err != nil {
+		t.Errorf("expected reputation.mmdb to be created: %v", err)
+	}
+	cloudAfter, _ := os.ReadFile(cloudPath)
+	if !bytes.Equal(cloudBefore, cloudAfter) {
+		t.Error("reputation build clobbered cloud.mmdb")
+	}
+}
+
+func seqOne(t *testing.T, cidr, provider string) func(func(attribution.Entry, error) bool) {
+	t.Helper()
+	pre := mustParsePrefix(t, cidr)
+	return func(yield func(attribution.Entry, error) bool) {
+		yield(attribution.Entry{Network: pre, Record: attribution.Record{Provider: provider, Services: []string{"X"}}}, nil)
 	}
 }
 

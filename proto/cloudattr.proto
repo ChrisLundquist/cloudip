@@ -28,6 +28,7 @@ message Record {
   string source = 5;
   int64 synced_at = 6; // unix epoch of the feed
   map<string, string> ext = 7;
+  repeated string categories = 8; // reputation tags: botnet_c2, tor_exit, drop, ...
 }
 
 message LookupResult {

@@ -30,6 +30,13 @@ by nginx via the stock `ngx_http_geoip2_module`. Module path:
 - `plugins/{aws,azure,gcp}/` — native parsers, self-register via `init()`, each
   with a `testdata/` fixture in the provider's OWN schema. `plugins/all` blank-
   imports them.
+- `plugins/reputation/{feodo,spamhaus,tor}/` — reputation/intelligence plugins.
+  They register in a SEPARATE registry (`RegisterReputation`/`ReputationPlugins`)
+  so cloud and reputation builds select independently, set `Categories` instead of
+  `Services`, and have no rezmoss mirror (direct-URL only, via `DirectPlugin`).
+  `cloudattr build --reputation` builds them. Both produce a `Cloud-Attribution`
+  MMDB; `categories` union ACROSS providers in `mergeRecords` (a Tor exit on an AWS
+  IP gets both), unlike `services` which stay provider-scoped.
 - `server/` — `Service` (atomic DB swap for reload) + `grpc.go` + `http.go`.
 - `cmd/cloudattr/` — CLI: `build` / `lookup` / `export` / `verify` / `serve`.
 - `proto/` — `.proto` + generated `cloudattrpb`. Regenerate with `make proto`.
