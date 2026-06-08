@@ -30,11 +30,12 @@ func runServe(args []string) error {
 	in := fs.String("in", "cloud.mmdb", "MMDB path to serve")
 	httpAddr := fs.String("http", ":8080", "HTTP listen address (empty to disable)")
 	grpcAddr := fs.String("grpc", ":9090", "gRPC listen address (empty to disable)")
+	index := fs.Bool("index", false, "build an in-memory provider index at load for faster /v1/provider lookups (trades heap for speed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	svc, err := server.NewService(*in)
+	svc, err := server.NewServiceIndexed(*in, *index)
 	if err != nil {
 		return err
 	}

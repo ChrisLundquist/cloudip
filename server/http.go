@@ -47,17 +47,35 @@ type batchResult struct {
 
 // NewHTTPHandler builds the HTTP mux for the service.
 //
-//	GET /v1/lookup/{ip}        -> 200 {record} | 404
+//	GET /v1/lookup/{ip}        -> 200 {record} | 404      (full record)
+//	GET /v1/provider/{ip}      -> 200 {provider,region} | 404  (identity-only, fast path)
 //	GET /v1/lookup?ip=&ip=     -> 200 [{ip,found,record}, ...]  (batch)
 //	GET /healthz  /metrics  /version
 func NewHTTPHandler(svc *Service) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/lookup/{ip}", svc.handleLookupOne)
+	mux.HandleFunc("GET /v1/provider/{ip}", svc.handleProvider)
 	mux.HandleFunc("GET /v1/lookup", svc.handleLookupBatch)
 	mux.HandleFunc("GET /healthz", svc.handleHealthz)
 	mux.HandleFunc("GET /version", svc.handleVersion)
 	mux.HandleFunc("GET /metrics", svc.handleMetrics)
 	return mux
+}
+
+// handleProvider answers identity-only ("which provider/region") lookups via the
+// fast LookupProvider path (which uses the in-memory index when built).
+func (s *Service) handleProvider(w http.ResponseWriter, r *http.Request) {
+	ip := r.PathValue("ip")
+	provider, region, found, err := s.LookupProvider(ip)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"ip": ip, "error": "not attributed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"provider": provider, "region": region})
 }
 
 func (s *Service) handleLookupOne(w http.ResponseWriter, r *http.Request) {
