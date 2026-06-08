@@ -114,15 +114,21 @@ func mergeRecords(incoming mmdbtype.Map) inserter.Func {
 		if !ok {
 			return incoming, nil // empty slot or non-map: take the incoming record
 		}
-		// A different provider claiming the same prefix: keep the first writer
-		// rather than fuse two providers into one inconsistent record (e.g. an aws
-		// record carrying a gcp service). Build order is deterministic (plugins
-		// sorted by name), so the winner is stable. provider stays scalar; revisit
-		// if multi-provider ownership (BYOIP/CDN) becomes common.
-		if !sameString(cur[keyProvider], incoming[keyProvider]) {
-			return cur, nil
-		}
 		merged := cur.Copy().(mmdbtype.Map)
+		// Categories are inherently cross-source intelligence tags, so they union
+		// regardless of provider (a Tor exit hosted on an AWS IP gets both). Only
+		// set the key when non-empty, so pure-cloud records stay byte-identical.
+		if cats := unionSlices(cur[keyCategories], incoming[keyCategories]); len(cats) > 0 {
+			merged[keyCategories] = cats
+		}
+
+		// A different provider claiming the same prefix: keep the first writer's
+		// provider-scoped fields rather than fuse two providers into one
+		// inconsistent record (e.g. an aws record carrying a gcp service). Build
+		// order is deterministic (plugins sorted by name), so the winner is stable.
+		if !sameString(cur[keyProvider], incoming[keyProvider]) {
+			return merged, nil
+		}
 		merged[keyServices] = unionSlices(cur[keyServices], incoming[keyServices])
 		merged[keyExt] = unionExt(cur[keyExt], incoming[keyExt])
 		merged[keySyncedAt] = maxUint64(cur[keySyncedAt], incoming[keySyncedAt])

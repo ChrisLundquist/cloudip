@@ -12,13 +12,14 @@ import (
 // jsonRecord is the HTTP JSON shape of a record. synced_at is a unix epoch so
 // the wire form matches the MMDB and gRPC representations.
 type jsonRecord struct {
-	Provider string            `json:"provider"`
-	Region   string            `json:"region"`
-	Services []string          `json:"services"`
-	IPv6     bool              `json:"ipv6"`
-	Source   string            `json:"source"`
-	SyncedAt int64             `json:"synced_at"`
-	Ext      map[string]string `json:"ext,omitempty"`
+	Provider   string            `json:"provider"`
+	Region     string            `json:"region"`
+	Services   []string          `json:"services"`
+	Categories []string          `json:"categories,omitempty"`
+	IPv6       bool              `json:"ipv6"`
+	Source     string            `json:"source"`
+	SyncedAt   int64             `json:"synced_at"`
+	Ext        map[string]string `json:"ext,omitempty"`
 }
 
 func toJSON(r attribution.Record) jsonRecord {
@@ -31,7 +32,7 @@ func toJSON(r attribution.Record) jsonRecord {
 		svcs = []string{}
 	}
 	return jsonRecord{
-		Provider: r.Provider, Region: r.Region, Services: svcs,
+		Provider: r.Provider, Region: r.Region, Services: svcs, Categories: r.Categories,
 		IPv6: r.IPv6, Source: r.Source, SyncedAt: synced, Ext: r.Ext,
 	}
 }

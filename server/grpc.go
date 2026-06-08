@@ -70,12 +70,13 @@ func recordToProto(r attribution.Record) *pb.Record {
 		synced = r.SyncedAt.Unix()
 	}
 	return &pb.Record{
-		Provider: r.Provider,
-		Region:   r.Region,
-		Services: r.Services,
-		Ipv6:     r.IPv6,
-		Source:   r.Source,
-		SyncedAt: synced,
-		Ext:      r.Ext,
+		Provider:   r.Provider,
+		Region:     r.Region,
+		Services:   r.Services,
+		Categories: r.Categories,
+		Ipv6:       r.IPv6,
+		Source:     r.Source,
+		SyncedAt:   synced,
+		Ext:        r.Ext,
 	}
 }

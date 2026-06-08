@@ -15,7 +15,7 @@ import (
 // the fastest pattern in Presto/Trino, while the CIDR stays readable.
 var csvHeader = []string{
 	"network_cidr", "start_ip_int", "end_ip_int",
-	"provider", "region", "services", "ipv6", "source", "synced_at",
+	"provider", "region", "services", "categories", "ipv6", "source", "synced_at",
 }
 
 // ExportCSV walks the database and writes one row per network to w. start_ip_int
@@ -41,6 +41,7 @@ func ExportCSV(db *DB, w io.Writer) (int, error) {
 			nr.Record.Provider,
 			nr.Record.Region,
 			strings.Join(nr.Record.Services, ","),
+			strings.Join(nr.Record.Categories, ","),
 			strconv.FormatBool(nr.Record.IPv6),
 			nr.Record.Source,
 			strconv.FormatInt(nr.Record.SyncedAt.Unix(), 10),

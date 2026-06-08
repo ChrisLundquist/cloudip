@@ -66,7 +66,11 @@ func runLookup(args []string) error {
 				fmt.Printf("%s\tnot attributed\n", ip)
 				continue
 			}
-			fmt.Printf("%s\t%s\t%s\t%s\n", ip, rec.Provider, rec.Region, strings.Join(rec.Services, ","))
+			tags := strings.Join(rec.Services, ",")
+			if len(rec.Categories) > 0 {
+				tags = strings.Join(rec.Categories, ",")
+			}
+			fmt.Printf("%s\t%s\t%s\t%s\n", ip, rec.Provider, rec.Region, tags)
 		}
 	}
 	// A miss is a valid answer, but a malformed IP is a failure; if every input
@@ -84,7 +88,8 @@ func recordMap(r attribution.Record) map[string]any {
 	}
 	return map[string]any{
 		"provider": r.Provider, "region": r.Region, "services": r.Services,
-		"ipv6": r.IPv6, "source": r.Source, "synced_at": synced, "ext": r.Ext,
+		"categories": r.Categories, "ipv6": r.IPv6, "source": r.Source,
+		"synced_at": synced, "ext": r.Ext,
 	}
 }
 

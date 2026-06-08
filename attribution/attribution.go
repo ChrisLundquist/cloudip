@@ -27,6 +27,11 @@ type Record struct {
 	// Services accumulates on overlapping prefixes: AWS lists the same CIDR once
 	// per owning service, so this is an array, not a scalar (see mergeServices).
 	Services []string
+	// Categories holds reputation/intelligence tags for an IP — "botnet_c2",
+	// "tor_exit", "drop", etc. Cloud plugins leave it empty; reputation plugins
+	// set it. Unlike Services, categories union across providers on overlap, so a
+	// single record can say "AWS us-east-1, and also a known Tor exit".
+	Categories []string
 	// IPv6 reports whether the network is an IPv6 network. It is derived at build
 	// time from the prefix, not supplied by plugins.
 	IPv6 bool
@@ -108,4 +113,22 @@ func Plugins() map[string]Plugin {
 func Lookup(name string) (Plugin, bool) {
 	p, ok := registry[name]
 	return p, ok
+}
+
+// reputationRegistry holds reputation/intelligence plugins (botnet C2, Tor exits,
+// Spamhaus DROP, ...). They are kept separate from cloud-provider plugins so a
+// cloud build and a reputation build select independently; both produce a
+// Cloud-Attribution MMDB, the reputation one carrying Categories.
+var reputationRegistry = map[string]Plugin{}
+
+// RegisterReputation adds a reputation plugin. Plugins call this from init().
+func RegisterReputation(p Plugin) { reputationRegistry[p.Name()] = p }
+
+// ReputationPlugins returns a copy of the reputation registry.
+func ReputationPlugins() map[string]Plugin {
+	out := make(map[string]Plugin, len(reputationRegistry))
+	for k, v := range reputationRegistry {
+		out[k] = v
+	}
+	return out
 }

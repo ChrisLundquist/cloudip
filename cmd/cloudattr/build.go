@@ -22,6 +22,7 @@ func runBuild(args []string) error {
 	recordSize := fs.Int("record-size", 28, "MMDB record size: 24, 28, or 32")
 	maxDrop := fs.Float64("max-drop", 0.5, "fail if network count drops more than this fraction vs existing --out")
 	maxSkip := fs.Float64("max-skip", 0.25, "fail if more than this fraction of entries are skipped (0 disables)")
+	reputation := fs.Bool("reputation", false, "build a reputation DB (Feodo botnet C2, Spamhaus DROP, Tor exits) instead of cloud providers")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -38,7 +39,29 @@ func runBuild(args []string) error {
 	// filters by the record's provider field (not the plugin registry), so it
 	// can subset to providers we ship no native plugin for (cloudflare, etc.).
 	var entries iter.Seq2[attribution.Entry, error]
-	if *source == "rezmoss-all" {
+	if *reputation {
+		// Reputation feeds have no rezmoss mirror: read each provider's own URL
+		// (the plugins implement DirectPlugin) or local fixtures.
+		plugins, err := attribution.SelectReputationPlugins(splitCSV(*providers))
+		if err != nil {
+			return err
+		}
+		if len(plugins) == 0 {
+			return fmt.Errorf("no reputation plugins registered")
+		}
+		resolve := attribution.DirectResolver()
+		shownSrc := "direct"
+		if *fixtures != "" {
+			resolve = attribution.FixtureResolver(*fixtures)
+			shownSrc = "fixtures:" + *fixtures
+		}
+		names := make([]string, len(plugins))
+		for i, p := range plugins {
+			names[i] = p.Name()
+		}
+		fmt.Fprintf(os.Stderr, "building %s (reputation) from [%s] via %s\n", *out, strings.Join(names, ","), shownSrc)
+		entries = attribution.Collect(ctx, plugins, resolve)
+	} else if *source == "rezmoss-all" {
 		filter := splitCSV(*providers)
 		src := attribution.Source(attribution.NewRezmossSource())
 		if *fixtures != "" {

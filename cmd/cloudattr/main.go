@@ -11,7 +11,8 @@ import (
 	"fmt"
 	"os"
 
-	_ "github.com/ChrisLundquist/cloudip/plugins/all" // register provider plugins
+	_ "github.com/ChrisLundquist/cloudip/plugins/all"            // register cloud provider plugins
+	_ "github.com/ChrisLundquist/cloudip/plugins/reputation/all" // register reputation plugins
 )
 
 func main() {
@@ -52,6 +53,7 @@ func usage() {
 
 Usage:
   cloudattr build  [--source rezmoss|rezmoss-all|direct] [--fixtures DIR] [--providers a,b] [--out FILE] [--csv FILE] [--max-drop FRAC]
+  cloudattr build  --reputation [--out reputation.mmdb]    # Feodo C2, Spamhaus DROP, Tor exits
   cloudattr lookup IP [IP ...]      [--in FILE] [--format text|json]
   cloudattr lookup -f FILE          [--in FILE] [--format text|json]
   cloudattr export [--in FILE] [--out FILE]

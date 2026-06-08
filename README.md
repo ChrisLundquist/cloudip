@@ -80,6 +80,32 @@ GET /v1/lookup?ip=&ip=     -> 200 [{ip,found,record}, ...]   # batch
 GET /healthz  GET /metrics  GET /version
 ```
 
+## Reputation feeds
+
+Beyond "which cloud owns this IP", cloudip can also build a parallel database of
+IP *reputation* — is this address a known botnet C2, a Tor exit, a hijacked
+netblock? It reuses the exact same machinery (build, reader, servers, CSV), just
+with a different set of plugins and a `categories` field instead of `services`:
+
+```sh
+./cloudattr build --reputation --out reputation.mmdb        # all reputation feeds
+./cloudattr build --reputation --providers tor --out tor.mmdb
+./cloudattr lookup --in reputation.mmdb 171.25.193.25       # -> tor  anonymizer,tor_exit
+```
+
+Three feeds ship today, all free and bulk-downloadable:
+
+| plugin | feed | categories | license |
+|---|---|---|---|
+| `feodo` | abuse.ch Feodo Tracker (botnet C2) | `botnet_c2`, `malware` | CC0 |
+| `spamhaus` | Spamhaus DROP (hijacked netblocks) | `drop`, `hijacked` | free, attribution required |
+| `tor` | Tor Project bulk exit list | `tor_exit`, `anonymizer` | open |
+
+Because `categories` union *across* providers (unlike `services`), you can even
+build cloud and reputation into one database and a single lookup will tell you
+both — e.g. "AWS us-east-1, and also a known Tor exit". Reputation entries are
+single hosts (`/32`/`/128`); everything else about the record schema is identical.
+
 ## Record schema
 
 Every network resolves to a **stable core** — the fields you can rely on being
@@ -92,6 +118,7 @@ like this:
 | `provider` | utf8 | which plugin produced this (`aws`/`azure`/`gcp`) |
 | `region` | utf8 | `""` when the provider gives none |
 | `services` | array<utf8> | **unions** on overlapping prefixes (see below) |
+| `categories` | array<utf8> | reputation tags (`tor_exit`, `drop`, …); unions across providers; omitted when empty |
 | `ipv6` | boolean | derived from the network at build time |
 | `source` | utf8 | provenance ref |
 | `synced_at` | uint64 | unix epoch of the feed |
@@ -253,3 +280,10 @@ One naming thing to be aware of: the MMDB `DatabaseType` is `Cloud-Attribution`,
 dependency side, `mmdbwriter` is Apache-2.0/MIT and `maxminddb-golang` is ISC. The
 rezmoss mirror itself is CC0, but keep in mind the upstream providers' own terms
 still apply to the underlying data.
+
+The reputation feeds have their own terms: abuse.ch Feodo Tracker is CC0, the Tor
+exit list is published openly, and **Spamhaus DROP is free to use (including
+commercially) provided you name Spamhaus as the source** — see
+<https://www.spamhaus.org/drop/terms/>. cloudip honors that by tagging every DROP
+record `provider=spamhaus` with its `source`; if you redistribute the DROP data
+itself, retain Spamhaus's attribution and header.

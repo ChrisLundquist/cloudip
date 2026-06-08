@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
+	_ "github.com/ChrisLundquist/cloudip/plugins/reputation/all" // register reputation plugins for the build test
 )
 
 // TestRunBuildRezmossAllFixture drives runBuild end-to-end through the
@@ -72,6 +73,63 @@ func TestRunBuildRezmossAllFixture(t *testing.T) {
 			t.Errorf("leftover temp file: %s", e.Name())
 		}
 	}
+}
+
+// TestRunBuildReputation drives runBuild --reputation against local fixtures and
+// checks the resulting DB attributes IPs to reputation categories.
+func TestRunBuildReputation(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(feeds, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite("feodo/ipblocklist.json", `[{"ip_address":"162.243.103.246","port":8080,"status":"offline","first_seen":"2022-06-04 21:24:53","malware":"Emotet"}]`)
+	mustWrite("spamhaus/drop.txt", "; header\n1.10.16.0/20 ; SBL256894\n")
+	mustWrite("tor/exit-list.txt", "171.25.193.25\n")
+
+	out := filepath.Join(dir, "reputation.mmdb")
+	if err := runBuild([]string{"--reputation", "--fixtures", feeds, "--out", out}); err != nil {
+		t.Fatalf("runBuild --reputation: %v", err)
+	}
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cases := map[string]struct{ provider, category string }{
+		"162.243.103.246": {"abuse.ch", "botnet_c2"},
+		"1.10.16.1":       {"spamhaus", "drop"},
+		"171.25.193.25":   {"tor", "tor_exit"},
+	}
+	for ip, want := range cases {
+		rec, found, err := db.LookupString(ip)
+		if err != nil || !found {
+			t.Errorf("%s: found=%v err=%v", ip, found, err)
+			continue
+		}
+		if rec.Provider != want.provider {
+			t.Errorf("%s provider = %q, want %q", ip, rec.Provider, want.provider)
+		}
+		if !contains(rec.Categories, want.category) {
+			t.Errorf("%s categories = %v, want to contain %q", ip, rec.Categories, want.category)
+		}
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestRunBuildProvidersFilter checks --providers subsets the rezmoss-all feed by
