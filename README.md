@@ -176,6 +176,13 @@ The pipeline is built to survive disk-full, crashes, and partial copies:
   renames into place (and fsyncs the directory). A disk-full or mid-build error
   surfaces before the rename and leaves the previous database untouched — never a
   truncated `cloud.mmdb`. CSV export is atomic the same way.
+- **Fail-closed sync.** Any fetch/parse error aborts the whole build (no
+  partial publish); the previous `cloud.mmdb` keeps serving and the next cron run
+  retries. `--max-drop` (default 0.5) refuses a build that shrank too much vs the
+  existing file; `--max-skip` (default 0.25) refuses one where too large a
+  fraction of entries were skipped (malformed/aliased) even on a first build.
+  Transient HTTP failures (network/5xx/429/408) are retried with backoff before
+  giving up.
 - **Validated loads.** `OpenValidated` (used by the server) rejects a file that
   isn't a non-empty `Cloud-Attribution` database, so a truncated or garbage file
   (e.g. an interrupted `scp`) is refused rather than served. A failed `Reload`

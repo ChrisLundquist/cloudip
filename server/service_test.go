@@ -65,6 +65,33 @@ func TestReloadCorruptKeepsServing(t *testing.T) {
 	}
 }
 
+// TestStatsCounters asserts the metrics counters reflect actual lookups: hits,
+// misses, and parse errors are categorized correctly.
+func TestStatsCounters(t *testing.T) {
+	svc, err := NewService(buildTestDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+
+	svc.Lookup("52.94.0.1")   // hit
+	svc.Lookup("52.94.0.2")   // hit
+	svc.Lookup("203.0.113.1") // miss (valid IP, not attributed)
+	svc.Lookup("not-an-ip")   // error
+	svc.Lookup("also bad")    // error
+
+	st := svc.Stats()
+	if st.Lookups != 5 {
+		t.Errorf("Lookups = %d, want 5", st.Lookups)
+	}
+	if st.Hits != 2 {
+		t.Errorf("Hits = %d, want 2", st.Hits)
+	}
+	if st.Errors != 2 {
+		t.Errorf("Errors = %d, want 2", st.Errors)
+	}
+}
+
 // TestReloadConcurrentLookup hammers Lookup while Reload swaps the database, with
 // the grace-close shortened so swapped-out handles actually get closed during
 // the test. Run under -race; it must not data-race or segfault (the bug was an

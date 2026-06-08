@@ -73,10 +73,20 @@ func (s *Service) handleLookupOne(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toJSON(rec))
 }
 
+// maxBatch bounds how many IPs one batch request may carry, so a pathological
+// query can't run unbounded work or exceed the server's WriteTimeout mid-response.
+const maxBatch = 1024
+
 func (s *Service) handleLookupBatch(w http.ResponseWriter, r *http.Request) {
 	ips := r.URL.Query()["ip"]
 	if len(ips) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no ip query parameter"})
+		return
+	}
+	if len(ips) > maxBatch {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": fmt.Sprintf("too many ips: %d (max %d)", len(ips), maxBatch),
+		})
 		return
 	}
 	out := make([]batchResult, 0, len(ips))

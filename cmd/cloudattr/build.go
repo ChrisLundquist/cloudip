@@ -21,6 +21,7 @@ func runBuild(args []string) error {
 	csvOut := fs.String("csv", "", "also export a CSV to this path")
 	recordSize := fs.Int("record-size", 28, "MMDB record size: 24, 28, or 32")
 	maxDrop := fs.Float64("max-drop", 0.5, "fail if network count drops more than this fraction vs existing --out")
+	maxSkip := fs.Float64("max-skip", 0.25, "fail if more than this fraction of entries are skipped (0 disables)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -83,7 +84,7 @@ func runBuild(args []string) error {
 		BuildEpoch: uint64(time.Now().Unix()),
 	}
 
-	res, err := attribution.BuildFile(entries, *out, opts, prev, *maxDrop)
+	res, err := attribution.BuildFile(entries, *out, opts, prev, *maxDrop, *maxSkip)
 	if err != nil {
 		return err
 	}

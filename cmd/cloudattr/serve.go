@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,6 +18,12 @@ import (
 	"github.com/ChrisLundquist/cloudip/proto/cloudattrpb"
 	"github.com/ChrisLundquist/cloudip/server"
 )
+
+// serveConfig is the listen configuration for serve.
+type serveConfig struct {
+	httpAddr string // "" disables HTTP
+	grpcAddr string // "" disables gRPC
+}
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -36,11 +43,15 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// SIGHUP -> reload the (atomically replaced) file in place.
+	// SIGHUP -> reload the (atomically replaced) file in place. The goroutine is
+	// joined before svc.Close() (deferred above) runs, so no reload overlaps close.
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case <-ctx.Done():
@@ -55,12 +66,25 @@ func runServe(args []string) error {
 		}
 	}()
 
+	err = serve(ctx, svc, serveConfig{httpAddr: *httpAddr, grpcAddr: *grpcAddr})
+	stop()    // ensure ctx is cancelled so the SIGHUP goroutine exits...
+	wg.Wait() // ...then join it before the deferred svc.Close() runs
+	return err
+}
+
+// serve starts the configured HTTP and gRPC servers and blocks until ctx is
+// cancelled (clean shutdown) or a server fails. It is decoupled from signal
+// handling so it can be driven by a context in tests.
+func serve(ctx context.Context, svc *server.Service, cfg serveConfig) error {
 	errc := make(chan error, 2)
 
 	var httpSrv *http.Server
-	if *httpAddr != "" {
+	if cfg.httpAddr != "" {
+		ln, err := net.Listen("tcp", cfg.httpAddr)
+		if err != nil {
+			return fmt.Errorf("http listen: %w", err)
+		}
 		httpSrv = &http.Server{
-			Addr:              *httpAddr,
 			Handler:           server.NewHTTPHandler(svc),
 			ReadHeaderTimeout: 5 * time.Second, // bound slow-header (Slowloris) clients
 			ReadTimeout:       15 * time.Second,
@@ -68,24 +92,24 @@ func runServe(args []string) error {
 			IdleTimeout:       60 * time.Second,
 		}
 		go func() {
-			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", *httpAddr)
-			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", ln.Addr())
+			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- fmt.Errorf("http: %w", err)
 			}
 		}()
 	}
 
 	var grpcSrv *grpc.Server
-	if *grpcAddr != "" {
-		lis, err := net.Listen("tcp", *grpcAddr)
+	if cfg.grpcAddr != "" {
+		lis, err := net.Listen("tcp", cfg.grpcAddr)
 		if err != nil {
-			shutdown(httpSrv, nil) // don't leave the HTTP server running on early return
+			shutdown(httpSrv, nil) // don't leave the HTTP server running
 			return fmt.Errorf("grpc listen: %w", err)
 		}
 		grpcSrv = grpc.NewServer()
 		cloudattrpb.RegisterCloudAttributionServer(grpcSrv, server.NewGRPCServer(svc))
 		go func() {
-			fmt.Fprintf(os.Stderr, "gRPC listening on %s\n", *grpcAddr)
+			fmt.Fprintf(os.Stderr, "gRPC listening on %s\n", lis.Addr())
 			if err := grpcSrv.Serve(lis); err != nil {
 				errc <- fmt.Errorf("grpc: %w", err)
 			}
@@ -95,13 +119,12 @@ func runServe(args []string) error {
 	select {
 	case <-ctx.Done():
 		fmt.Fprintln(os.Stderr, "shutting down")
+		shutdown(httpSrv, grpcSrv)
+		return nil
 	case err := <-errc:
-		stop()
 		shutdown(httpSrv, grpcSrv)
 		return err
 	}
-	shutdown(httpSrv, grpcSrv)
-	return nil
 }
 
 func shutdown(httpSrv *http.Server, grpcSrv *grpc.Server) {

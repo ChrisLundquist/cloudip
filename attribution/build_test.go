@@ -3,6 +3,7 @@ package attribution
 import (
 	"bytes"
 	"iter"
+	"math/big"
 	"net/netip"
 	"strings"
 	"testing"
@@ -198,6 +199,94 @@ func TestMergeKeepsFreshestSyncedAt(t *testing.T) {
 	}
 	if strings.Join(rec.Services, ",") != "EC2,S3" {
 		t.Errorf("services = %v, want union EC2,S3", rec.Services)
+	}
+}
+
+// TestBuildRejectsPoisoningV4in6 guards the HIGH bug: a 4-in-6 prefix shorter
+// than /96 must be skipped, never inserted as 0.0.0.0/0 (which would attribute
+// all of IPv4 to one provider).
+func TestBuildRejectsPoisoningV4in6(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "::ffff:0:0/95"), Record: Record{Provider: "evil", Services: []string{"X"}}},
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},
+	}
+	var buf bytes.Buffer
+	stats, err := Build(entriesFrom(es), &buf, BuildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inserted != 1 || stats.Skipped != 1 {
+		t.Fatalf("stats = %+v, want 1 inserted / 1 skipped", stats)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Arbitrary public v4 must NOT be attributed (no default-route poisoning).
+	for _, ip := range []string{"8.8.8.8", "1.1.1.1", "203.0.113.7"} {
+		if rec, found, _ := db.LookupString(ip); found {
+			t.Errorf("%s wrongly attributed to %q (default route poisoned)", ip, rec.Provider)
+		}
+	}
+	if _, found, _ := db.LookupString("52.94.0.1"); !found {
+		t.Error("legit aws network missing")
+	}
+}
+
+// TestExportCSVIPv6Bounds covers the 128-bit big.Int branch of rangeBounds by
+// checking the emitted bounds satisfy the invariant end-start+1 == 2^hostbits and
+// start == integer(network address), computed independently here.
+func TestExportCSVIPv6Bounds(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "2600:1f00::/24"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},
+	}
+	var mmdb bytes.Buffer
+	if _, err := Build(entriesFrom(es), &mmdb, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(mmdb.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var csv bytes.Buffer
+	if _, err := ExportCSV(db, &csv); err != nil {
+		t.Fatal(err)
+	}
+
+	// Find the data row and pull start/end columns.
+	var row string
+	for _, line := range strings.Split(csv.String(), "\n") {
+		if strings.HasPrefix(line, "2600:1f00::/24,") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatalf("no v6 row in CSV:\n%s", csv.String())
+	}
+	cols := strings.Split(row, ",")
+	start, ok := new(big.Int).SetString(cols[1], 10)
+	if !ok {
+		t.Fatalf("bad start int %q", cols[1])
+	}
+	end, ok := new(big.Int).SetString(cols[2], 10)
+	if !ok {
+		t.Fatalf("bad end int %q", cols[2])
+	}
+
+	// Expected start = integer of 2600:1f00:: (the masked network address).
+	a := netip.MustParseAddr("2600:1f00::").As16()
+	wantStart := new(big.Int).SetBytes(a[:])
+	if start.Cmp(wantStart) != 0 {
+		t.Errorf("v6 start = %s, want %s", start, wantStart)
+	}
+	// end - start + 1 must equal 2^(128-24).
+	span := new(big.Int).Add(new(big.Int).Sub(end, start), big.NewInt(1))
+	wantSpan := new(big.Int).Lsh(big.NewInt(1), 128-24)
+	if span.Cmp(wantSpan) != 0 {
+		t.Errorf("v6 span = %s, want 2^104 = %s", span, wantSpan)
 	}
 }
 

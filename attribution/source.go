@@ -91,7 +91,7 @@ func (s *HTTPSource) Open(ctx context.Context, ref string) (io.ReadCloser, error
 // retryableStatus reports whether an HTTP status warrants a retry: 429 and 5xx
 // are transient; other 4xx are caller errors that won't improve on retry.
 func retryableStatus(code int) bool {
-	return code == http.StatusTooManyRequests || code >= 500
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
 }
 
 // FileSource resolves refs as files under Dir (or as absolute paths when Dir is
@@ -102,22 +102,26 @@ type FileSource struct {
 }
 
 // Open opens ref as a file. A ref may use forward slashes on any OS. When Dir is
-// set, the ref is confined to it: a ref that escapes via ".." (or an absolute
-// path) is rejected rather than silently reading outside the fixture/cache dir.
+// set, the ref is confined to it via os.OpenInRoot, which rejects escapes — not
+// just lexical ".."/absolute paths but symlinks that point outside Dir — at the
+// syscall level. With Dir empty, ref is opened directly (trusted absolute path).
 func (s FileSource) Open(_ context.Context, ref string) (io.ReadCloser, error) {
-	clean := filepath.FromSlash(path.Clean("/" + strings.TrimPrefix(ref, "/")))
-	p := clean
-	if s.Dir != "" {
-		// clean is rooted at "/", so Join drops any leading ".." — confining it.
-		p = filepath.Join(s.Dir, clean)
-		rel, err := filepath.Rel(s.Dir, p)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("ref %q escapes source dir %q", ref, s.Dir)
+	if s.Dir == "" {
+		f, err := os.Open(filepath.FromSlash(ref))
+		if err != nil {
+			return nil, fmt.Errorf("open fixture %q: %w", ref, err)
 		}
+		return f, nil
 	}
-	f, err := os.Open(p)
+	// Make ref a clean path relative to Dir (drop any leading slash so it isn't
+	// treated as absolute), then let OpenInRoot enforce confinement.
+	rel := filepath.FromSlash(strings.TrimPrefix(path.Clean("/"+ref), "/"))
+	if rel == "" {
+		rel = "."
+	}
+	f, err := os.OpenInRoot(s.Dir, rel)
 	if err != nil {
-		return nil, fmt.Errorf("open fixture %q: %w", p, err)
+		return nil, fmt.Errorf("open fixture %q in %q: %w", ref, s.Dir, err)
 	}
 	return f, nil
 }

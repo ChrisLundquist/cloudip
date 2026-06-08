@@ -2,10 +2,23 @@ package azure
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
 )
+
+func TestParseBadJSON(t *testing.T) {
+	var sawErr bool
+	for _, err := range (Plugin{}).Parse("x", strings.NewReader("{not json")) {
+		if err != nil {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Fatal("expected a parse error for malformed JSON")
+	}
+}
 
 func TestParse(t *testing.T) {
 	f, err := os.Open("testdata/ServiceTags_Public.json")

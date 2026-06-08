@@ -22,7 +22,12 @@ type SyncResult struct {
 //
 // maxDropFrac in (0,1] fails the build if the new network count is below
 // (1-maxDropFrac) * prev.Networks. Pass prev == nil to skip the guard (first build).
-func BuildFile(entries iter.Seq2[Entry, error], path string, opts BuildOptions, prev *VerifyReport, maxDropFrac float64) (SyncResult, error) {
+//
+// maxSkipFrac in (0,1] independently fails the build if too large a fraction of
+// entries were skipped (structural rejects, malformed prefixes). The drop-guard
+// can't see skips that are masked by new additions, so this catches a feed that
+// suddenly goes mostly-garbage even on a first build. Pass 0 to disable.
+func BuildFile(entries iter.Seq2[Entry, error], path string, opts BuildOptions, prev *VerifyReport, maxDropFrac, maxSkipFrac float64) (SyncResult, error) {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -50,6 +55,15 @@ func BuildFile(entries iter.Seq2[Entry, error], path string, opts BuildOptions, 
 	}
 	if err := tmp.Close(); err != nil {
 		return SyncResult{}, fmt.Errorf("close temp: %w", err)
+	}
+
+	if maxSkipFrac > 0 {
+		total := stats.Inserted + stats.Skipped
+		if total > 0 && float64(stats.Skipped)/float64(total) > maxSkipFrac {
+			return SyncResult{}, fmt.Errorf(
+				"skipped too many networks: %d of %d (%.1f%% > %.0f%%); refusing to publish",
+				stats.Skipped, total, 100*float64(stats.Skipped)/float64(total), maxSkipFrac*100)
+		}
 	}
 
 	// Verify by reopening the file we just wrote.

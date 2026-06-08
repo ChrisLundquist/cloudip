@@ -107,4 +107,16 @@ func TestFileSourceConfinement(t *testing.T) {
 		rc.Close()
 		t.Error("absolute ref was not confined to source dir")
 	}
+
+	// A symlink living INSIDE the dir but pointing OUTSIDE must not escape
+	// (os.OpenInRoot enforces this at the syscall level).
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := src.Open(context.Background(), "link.json"); err == nil {
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		t.Errorf("symlink escaped source dir and read %q", b)
+	}
 }

@@ -6,6 +6,7 @@ package server
 import (
 	"fmt"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +27,11 @@ type Service struct {
 	lookups atomic.Int64
 	hits    atomic.Int64
 	errors  atomic.Int64
+
+	// mu serializes Reload against Close so a reload can't install a database the
+	// service is concurrently shutting down (double-close / leak).
+	mu     sync.Mutex
+	closed bool
 
 	// closeAfter delays closing a swapped-out DB; overridable in tests.
 	closeAfter func(*attribution.DB)
@@ -60,6 +66,12 @@ func (s *Service) Reload() error {
 	if err != nil {
 		return fmt.Errorf("reload %s: %w", s.path, err)
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		db.Close() // service is shutting down; don't install a new handle
+		return nil
+	}
 	old := s.db.Swap(db)
 	if old != nil {
 		s.closeAfter(old)
@@ -67,8 +79,15 @@ func (s *Service) Reload() error {
 	return nil
 }
 
-// Close releases the current database.
+// Close releases the current database. After Close, a concurrent Reload will not
+// install (or leak) a new handle.
 func (s *Service) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
 	if db := s.db.Load(); db != nil {
 		return db.Close()
 	}

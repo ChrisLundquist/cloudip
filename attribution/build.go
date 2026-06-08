@@ -78,9 +78,14 @@ func Build(entries iter.Seq2[Entry, error], out io.Writer, opts BuildOptions) (B
 		if !e.Network.IsValid() {
 			return stats, fmt.Errorf("invalid network in entry for provider %q", e.Record.Provider)
 		}
-		e.Record.IPv6 = isV6Network(e.Network)
+		network, ok := normalizePrefix(e.Network)
+		if !ok {
+			stats.Skipped++ // malformed v4-in-v6 super-range; never poison the v4 default route
+			continue
+		}
+		e.Record.IPv6 = isV6Network(network)
 		rec := toMMDB(e.Record, e.Record.IPv6)
-		ipnet := prefixToIPNet(e.Network)
+		ipnet := prefixToIPNet(network)
 		if err := tree.InsertFunc(ipnet, mergeRecords(rec)); err != nil {
 			// Aliased ranges (6to4/Teredo) and similar structural rejects: skip
 			// the single network rather than failing the whole feed.
@@ -193,15 +198,26 @@ func unionExt(a, b mmdbtype.DataType) mmdbtype.Map {
 // prefixToIPNet converts a netip.Prefix to the *net.IPNet that mmdbwriter
 // expects. mmdbwriter canonicalizes the network address itself, so callers need
 // not pre-mask the prefix.
+// normalizePrefix canonicalizes a v4-in-v6 prefix (e.g. ::ffff:1.2.3.0/120) to
+// native IPv4 so it inserts into v4 space rather than the aliased ::ffff:0:0/96
+// region. It rejects a 4-in-6 prefix shorter than /96: that would yield a
+// negative v4 prefix length and (via a nil CIDRMask) silently insert as
+// 0.0.0.0/0 — attributing the entire IPv4 space to one provider. ok=false means
+// the caller should skip the entry.
+func normalizePrefix(p netip.Prefix) (netip.Prefix, bool) {
+	addr := p.Addr()
+	if addr.Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}, false
+		}
+		return netip.PrefixFrom(addr.Unmap(), p.Bits()-96), true
+	}
+	return p, true
+}
+
 func prefixToIPNet(p netip.Prefix) *net.IPNet {
 	addr := p.Addr()
 	bits := p.Bits()
-	// Unmap v4-in-v6 (e.g. ::ffff:1.2.3.0/120) to native IPv4, else mmdbwriter
-	// rejects it as an insert into the aliased ::ffff:0:0/96 network.
-	if addr.Is4In6() {
-		addr = addr.Unmap()
-		bits -= 96
-	}
 	if addr.Is4() {
 		return &net.IPNet{
 			IP:   net.IP(addr.AsSlice()),
