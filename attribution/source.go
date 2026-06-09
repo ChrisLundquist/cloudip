@@ -57,6 +57,14 @@ const ReputationBaseEnv = "CLOUDIP_REPUTATION_BASE"
 // ReputationBase returns the CLOUDIP_REPUTATION_BASE override, or "" if unset.
 func ReputationBase() string { return strings.TrimSpace(os.Getenv(ReputationBaseEnv)) }
 
+// ASNBaseEnv repoints the ASN feed — which, like reputation, has no rezmoss
+// mirror — at an internal HTTP cache, for `--asn`/`--with-asn` with
+// `--asn-source mirror`. The plugins' relative Refs() are fetched from it.
+const ASNBaseEnv = "CLOUDIP_ASN_BASE"
+
+// ASNBase returns the CLOUDIP_ASN_BASE override, or "" if unset.
+func ASNBase() string { return strings.TrimSpace(os.Getenv(ASNBaseEnv)) }
+
 // NewDirectSource returns an HTTPSource that treats refs as absolute URLs.
 func NewDirectSource() *HTTPSource { return &HTTPSource{} }
 

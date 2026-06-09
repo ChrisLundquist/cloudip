@@ -20,7 +20,10 @@ by nginx via the stock `ngx_http_geoip2_module`. Module path:
     (`mergeRecords`). Returns `BuildStats{Inserted,Skipped}`; structurally-rejected
     networks (aliased 6to4/Teredo) are skipped, not fatal.
   - `storage.go` — `Record` ↔ `mmdbtype` and the on-disk `storedRecord` (decode).
-  - `reader.go` — `DB`, `Open`/`OpenBytes`, `Lookup`, `Networks` walk.
+  - `reader.go` — `DB`, `Open`/`OpenBytes`, `Lookup`, `Networks` walk. `Lookup`
+    sets `Record.Network` from the matched TREE NODE (derived, never stored —
+    a stored network would rot on splits and break record dedup); it can be
+    narrower than the feed CIDR. v4-mapped queries unmap it to native v4.
   - `pipeline.go` — `Feed` (source+ref+parser), `Collect`, and the resolvers
     (`Rezmoss`/`Direct`/`Fixture`). This is the seam between IO and parsing.
   - `rezmoss.go` — uniform rezmoss decoders: `ParseRezmoss` (per-provider file)
@@ -30,6 +33,18 @@ by nginx via the stock `ngx_http_geoip2_module`. Module path:
 - `plugins/{aws,azure,gcp}/` — native parsers, self-register via `init()`, each
   with a `testdata/` fixture in the provider's OWN schema. `plugins/all` blank-
   imports them.
+  - `asn.go` — `ASNRange`/`ASNTable` (BGP origin-AS interval table) and
+    `EnrichASN`: a stream transform that stamps `ext.asn`/`ext.as_org` into
+    entries, SPLITTING them at announcement boundaries (an AWS /22 half
+    announced by AS8987 GovCloud comes out as two entries). Unannounced gaps
+    pass through unstamped. ASN lives in `ext` (stored strings) precisely so
+    nginx can read it, unlike the lookup-derived `network`.
+- `plugins/asn/iptoasn/` — IP->ASN plugin over the iptoasn.com table (public
+  domain, BGP-derived, gzip-sniffing TSV parser). Registers in a THIRD registry
+  (`RegisterASN`); `cloudattr build --asn` builds a standalone asn.mmdb,
+  `--with-asn` enriches a cloud/reputation build via `EnrichASN`. Sources:
+  direct (default) / mirror (`CLOUDIP_ASN_BASE`) / fixtures; selected with
+  `--asn-source` (NOT `--source`, which is cloud-only).
 - `plugins/reputation/{feodo,spamhaus,tor}/` — reputation/intelligence plugins.
   They register in a SEPARATE registry (`RegisterReputation`/`ReputationPlugins`)
   so cloud and reputation builds select independently, set `Categories` instead of
@@ -37,6 +52,11 @@ by nginx via the stock `ngx_http_geoip2_module`. Module path:
   `cloudattr build --reputation` builds them. Both produce a `Cloud-Attribution`
   MMDB; `categories` union ACROSS providers in `mergeRecords` (a Tor exit on an AWS
   IP gets both), unlike `services` which stay provider-scoped.
+  `cloudattr build --with-reputation` builds ONE combined DB: the reputation
+  stream is concatenated AFTER the cloud stream (`ConcatEntries`) because the
+  merge is first-writer-wins on identity — cloud-first means a reputation /32
+  nested in a cloud range enriches categories instead of claiming the prefix
+  (see `TestCategoriesNestedPrefix`).
 - `server/` — `Service` (atomic DB swap for reload) + `grpc.go` + `http.go`.
 - `cmd/cloudattr/` — CLI: `build` / `lookup` / `export` / `verify` / `serve`.
 - `proto/` — `.proto` + generated `cloudattrpb`. Regenerate with `make proto`.

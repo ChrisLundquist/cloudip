@@ -29,6 +29,10 @@ message Record {
   int64 synced_at = 6; // unix epoch of the feed
   map<string, string> ext = 7;
   repeated string categories = 8; // reputation tags: botnet_c2, tor_exit, drop, ...
+  // The matched network in CIDR form, derived by the reader at lookup time
+  // (never stored in the MMDB). This is the matched tree node: always contains
+  // the queried IP, but can be narrower than the CIDR the feed published.
+  string network = 9;
 }
 
 message LookupResult {

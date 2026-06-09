@@ -38,9 +38,19 @@ record schema.
 
 ## Quick start
 
-Build the binary, then point it at whichever data source suits you. The most
-common path is the rezmoss CC0 mirror, but you can hit the providers' own URLs or
-work entirely offline from local fixtures:
+If you just want the data, skip the toolchain entirely: a fresh `cloud.mmdb`
+(all ~24 rezmoss providers, enriched with origin ASNs) and a standalone
+`asn.mmdb` (every routed range) are published daily to the rolling
+[`mmdb-latest` release](https://github.com/ChrisLundquist/cloudip/releases/tag/mmdb-latest),
+alongside a gzipped CSV and SHA-256 checksums:
+
+```sh
+curl -LO https://github.com/ChrisLundquist/cloudip/releases/download/mmdb-latest/cloud.mmdb
+```
+
+Otherwise, build the binary and point it at whichever data source suits you. The
+most common path is the rezmoss CC0 mirror, but you can hit the providers' own
+URLs or work entirely offline from local fixtures:
 
 ```sh
 go build -o cloudattr ./cmd/cloudattr
@@ -103,6 +113,7 @@ with a different set of plugins and a `categories` field instead of `services`:
 ```sh
 ./cloudattr build --reputation --out reputation.mmdb        # all reputation feeds
 ./cloudattr build --reputation --providers tor --out tor.mmdb
+./cloudattr build --with-reputation --out cloud.mmdb        # ONE db: cloud + categories
 ./cloudattr lookup --in reputation.mmdb 171.25.193.25       # -> tor  anonymizer,tor_exit
 ```
 
@@ -114,16 +125,53 @@ Three feeds ship today, all free and bulk-downloadable:
 | `spamhaus` | Spamhaus DROP (hijacked netblocks) | `drop`, `hijacked` | free, attribution required |
 | `tor` | Tor Project bulk exit list | `tor_exit`, `anonymizer` | open |
 
-Because `categories` union *across* providers (unlike `services`), you can even
-build cloud and reputation into one database and a single lookup will tell you
-both — e.g. "AWS us-east-1, and also a known Tor exit". Most reputation entries
-are single hosts (`/32`); Spamhaus DROP contributes CIDR netblocks. Everything
-else about the record schema is identical.
+Because `categories` union *across* providers (unlike `services`), `--with-reputation`
+builds cloud and reputation into one database, and a single lookup tells you
+both — e.g. "AWS us-east-1, and also a known Tor exit". The builder inserts the
+cloud feeds first, which matters: a reputation `/32` nested inside a cloud range
+then *enriches* that record's categories rather than replacing its identity, and
+the rest of the cloud range is untouched. Most reputation entries are single
+hosts (`/32`); Spamhaus DROP contributes CIDR netblocks. Everything else about
+the record schema is identical. Prefer two files (they go stale on very
+different cadences)? nginx loads both happily — the geoip2 module accepts
+multiple database blocks (see
+[`deploy/nginx-geoip2.conf`](deploy/nginx-geoip2.conf)).
 
 Reputation data goes stale fast — a decommissioned C2 or exit node is a false
 positive waiting to happen — so per-entry `synced_at` tracks freshness where the
 feed provides it (Feodo uses `last_online`), and `cloudattr verify` reports the
 oldest/newest entry age so you can alert when a feed stops updating.
+
+## ASN — which AS actually announces it
+
+Provider feeds tell you who *claims* a range; BGP tells you who *announces* it,
+and the two disagree in interesting places — most of AWS announces as AS16509
+(AMAZON-02), but legacy us-east-1 space still announces as AS14618 (AMAZON-AES)
+or AS7224 (Amazon.com), and GovCloud as AS8987, sometimes carving up a single
+published CIDR. The data comes from [iptoasn.com](https://iptoasn.com) (public
+domain, BGP-derived from RouteViews, refreshed hourly), and there are two ways
+to use it:
+
+```sh
+./cloudattr build --asn --out asn.mmdb     # standalone: full IP->origin-AS DB (~700k networks)
+./cloudattr build --with-asn               # enrich: stamp ext.asn/ext.as_org into cloud records
+```
+
+`--with-asn` splits entries at announcement boundaries, so a single AWS /22 can
+come out as "52.94.8.0/23 → AS8987 GovCloud" next to "52.94.10.0/23 → AS16509":
+
+```sh
+$ ./cloudattr lookup --format json 3.2.64.1
+# -> provider=aws region=us-east-1 ext={"asn":"14618","as_org":"AMAZON-AES",...}
+```
+
+Because the ASN lands in `ext` (stored strings), **nginx can read it** — unlike
+the lookup-time `network` field, this one survives into the record leaves:
+`$cloud_asn ext asn;` in the geoip2 block. The standalone `asn.mmdb` works as
+yet another `geoip2` block, attributing *every* routed IP, cloud or not. An
+unannounced piece of a published range simply carries no `asn` key, and a
+cloud-claimed range announced by an unexpected ASN is worth alerting on — the
+enrichment doubles as feed-vs-routing cross-validation.
 
 ## Record schema
 
@@ -142,6 +190,16 @@ like this:
 | `source` | utf8 | provenance ref |
 | `synced_at` | uint64 | unix epoch of the feed |
 | `ext` | map<utf8,utf8> | provider-specific keys; strings so nginx can read them |
+
+Lookups (Go API, HTTP, gRPC, CLI) additionally return a `network` field — the
+matched range in CIDR form. It is **derived from the search tree at lookup time,
+never stored in a record**: a stored network would go stale whenever an
+overlapping insert splits a range, and would defeat the MMDB's record
+deduplication. Two consequences: it can be *narrower* than the CIDR the provider
+published (the tree fragments ranges that overlap — same semantics as MaxMind's
+own `network` field), and nginx can't see it, since the geoip2 module only maps
+stored record leaves to variables (exposing it there would mean patching the
+module itself).
 
 One detail worth calling out: **`services` is an array, not a scalar.** AWS lists
 the same CIDR once per owning service, so rather than have the last write win, the

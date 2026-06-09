@@ -352,6 +352,118 @@ func TestCategoriesUnionReverseOrder(t *testing.T) {
 	}
 }
 
+// TestCategoriesNestedPrefix pins the semantics a combined cloud+reputation
+// build relies on: when a reputation /32 lands INSIDE an already-inserted cloud
+// range, mmdbwriter splits the range and the merge inserter sees the inherited
+// cloud record — so the /32 keeps the cloud identity and gains the reputation
+// categories, while the rest of the range stays a clean cloud record. Insert
+// order is load-bearing: reputation-first instead leaves a reputation-identity
+// hole in the cloud range (first-writer-wins), which is why ConcatEntries puts
+// the cloud stream first.
+func TestCategoriesNestedPrefix(t *testing.T) {
+	cloud := []Entry{{Network: mustPrefix(t, "52.94.0.0/20"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}}}
+	rep := []Entry{{Network: mustPrefix(t, "52.94.0.55/32"), Record: Record{Provider: "tor", Categories: []string{"tor_exit"}}}}
+
+	build := func(t *testing.T, entries iter.Seq2[Entry, error]) *DB {
+		t.Helper()
+		var buf bytes.Buffer
+		if _, err := Build(entries, &buf, BuildOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		db, err := OpenBytes(buf.Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+
+	t.Run("cloud-first", func(t *testing.T) {
+		db := build(t, ConcatEntries(entriesFrom(cloud), entriesFrom(rep)))
+		// The /32 keeps the cloud identity and gains the reputation tag.
+		in32, found, _ := db.LookupString("52.94.0.55")
+		if !found || in32.Provider != "aws" || in32.Region != "us-east-1" {
+			t.Errorf("nested /32 lost cloud identity: found=%v %+v", found, in32)
+		}
+		if strings.Join(in32.Categories, ",") != "tor_exit" {
+			t.Errorf("nested /32 categories = %v, want [tor_exit]", in32.Categories)
+		}
+		// The rest of the /20 is untouched: no categories bleed.
+		out32, found, _ := db.LookupString("52.94.0.99")
+		if !found || out32.Provider != "aws" || len(out32.Categories) != 0 {
+			t.Errorf("rest of /20 changed: found=%v %+v", found, out32)
+		}
+	})
+
+	t.Run("rep-first", func(t *testing.T) {
+		db := build(t, ConcatEntries(entriesFrom(rep), entriesFrom(cloud)))
+		// First writer wins identity: the /32 stays a tor record (no aws fields).
+		in32, _, _ := db.LookupString("52.94.0.55")
+		if in32.Provider != "tor" || strings.Join(in32.Categories, ",") != "tor_exit" {
+			t.Errorf("nested /32 = %+v, want tor identity with tor_exit", in32)
+		}
+		out32, _, _ := db.LookupString("52.94.0.99")
+		if out32.Provider != "aws" {
+			t.Errorf("rest of /20 = %+v, want aws", out32)
+		}
+	})
+}
+
+// TestLookupMatchedNetwork pins the Record.Network semantics: the matched TREE
+// NODE, not the feed CIDR. An unfragmented insert comes back verbatim; a range
+// split by a nested insert reports the (narrower) fragment containing the
+// queried IP; and a v4-mapped query reports the same native-v4 network as the
+// equivalent plain-v4 query (see unmapPrefix).
+func TestLookupMatchedNetwork(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/20"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},
+		{Network: mustPrefix(t, "52.94.0.55/32"), Record: Record{Provider: "tor", Categories: []string{"tor_exit"}}},
+		{Network: mustPrefix(t, "198.51.100.0/24"), Record: Record{Provider: "gcp", Services: []string{"X"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Unfragmented range: the node IS the inserted CIDR.
+	rec, _, _ := db.LookupString("198.51.100.7")
+	if rec.Network.String() != "198.51.100.0/24" {
+		t.Errorf("unfragmented network = %s, want 198.51.100.0/24", rec.Network)
+	}
+
+	// The nested /32 punched a hole in the /20, so a neighbor IP matches a
+	// fragment: narrower than (or equal to) the insert, but always containing
+	// the queried IP.
+	rec, _, _ = db.LookupString("52.94.0.1")
+	parent, q := mustPrefix(t, "52.94.0.0/20"), netip.MustParseAddr("52.94.0.1")
+	if !parent.Overlaps(rec.Network) || rec.Network.Bits() < parent.Bits() || !rec.Network.Contains(q) {
+		t.Errorf("fragment network = %s, want a sub-range of %s containing %s", rec.Network, parent, q)
+	}
+	rec, _, _ = db.LookupString("52.94.0.55")
+	if rec.Network.String() != "52.94.0.55/32" {
+		t.Errorf("nested network = %s, want 52.94.0.55/32", rec.Network)
+	}
+
+	// A v4-mapped query reports the network in native v4, identical to the
+	// plain-v4 query for the same address.
+	plain, _, _ := db.LookupString("52.94.0.1")
+	mapped, found, err := db.LookupString("::ffff:52.94.0.1")
+	if err != nil || !found {
+		t.Fatalf("v4-mapped lookup: found=%v err=%v", found, err)
+	}
+	if mapped.Network != plain.Network {
+		t.Errorf("v4-mapped network = %s, plain = %s; want identical", mapped.Network, plain.Network)
+	}
+	if mapped.Network.Addr().Is4In6() {
+		t.Errorf("v4-mapped network %s not unmapped to native v4", mapped.Network)
+	}
+}
+
 // TestExportCSVCategoriesColumn asserts the categories column exists in the
 // header at the right position and is populated for a reputation row.
 func TestExportCSVCategoriesColumn(t *testing.T) {

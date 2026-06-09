@@ -73,6 +73,10 @@ func recordToProto(r attribution.Record) *pb.Record {
 	if !r.SyncedAt.IsZero() {
 		synced = r.SyncedAt.Unix()
 	}
+	var network string
+	if r.Network.IsValid() {
+		network = r.Network.String()
+	}
 	return &pb.Record{
 		Provider:   r.Provider,
 		Region:     r.Region,
@@ -82,5 +86,6 @@ func recordToProto(r attribution.Record) *pb.Record {
 		Source:     r.Source,
 		SyncedAt:   synced,
 		Ext:        r.Ext,
+		Network:    network,
 	}
 }

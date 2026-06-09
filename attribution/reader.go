@@ -73,7 +73,10 @@ func OpenValidated(path string) (*DB, error) {
 }
 
 // Lookup returns the attribution record for ip. found is false (with a nil
-// error) when ip is in no known cloud range.
+// error) when ip is in no known cloud range. The returned Record carries the
+// matched network (see Record.Network for its exact semantics); a v4-mapped
+// query (::ffff:a.b.c.d) reports it as native IPv4, while 6to4/Teredo queries
+// report it in the queried (aliased) address space.
 func (d *DB) Lookup(ip netip.Addr) (rec Record, found bool, err error) {
 	res := d.r.Lookup(ip)
 	if err := res.Err(); err != nil {
@@ -86,7 +89,19 @@ func (d *DB) Lookup(ip netip.Addr) (rec Record, found bool, err error) {
 	if err := res.Decode(&sr); err != nil {
 		return Record{}, false, fmt.Errorf("decode record for %s: %w", ip, err)
 	}
-	return sr.toRecord(), true, nil
+	rec = sr.toRecord()
+	rec.Network = unmapPrefix(res.Prefix())
+	return rec, true, nil
+}
+
+// unmapPrefix canonicalizes a v4-in-v6 matched prefix (::ffff:a.b.c.0/123) to
+// native IPv4 (a.b.c.0/27), so a v4-mapped query reports the same network as
+// the equivalent plain-v4 query. Other prefixes pass through unchanged.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if p.Addr().Is4In6() && p.Bits() >= 96 {
+		return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	return p
 }
 
 // Contains reports whether ip falls in any known network. It decodes nothing —

@@ -1,0 +1,84 @@
+name: Publish database
+
+# Builds fresh databases daily and publishes them to a rolling GitHub release
+# (tag `mmdb-latest`), so consumers can download the data without a Go
+# toolchain. Release assets are free on public repos and the files are ~tens
+# of MB, well under the 2GB per-asset limit.
+#
+#   cloud.mmdb — all rezmoss providers, enriched with origin ASNs (--with-asn)
+#   asn.mmdb   — standalone IP->ASN for every routed range (iptoasn.com)
+#
+# Both sources are public domain (rezmoss CC0 mirror, iptoasn RouteViews
+# derivation). The reputation feeds are NOT included because Spamhaus DROP
+# restricts redistribution. Build those yourself with `cloudattr build
+# --reputation` (or `--with-reputation` for a combined database).
+
+on:
+  schedule:
+    - cron: '17 4 * * *' # daily; offset from the top of the hour per GitHub guidance
+  workflow_dispatch:
+
+permissions:
+  contents: write # create/update the rolling release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: build cli
+        run: go build -o cloudattr ./cmd/cloudattr
+
+      # Seed the previous published databases so each build's drop-guard
+      # (--max-drop) compares against the last good publish, not nothing.
+      - name: fetch previous databases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download mmdb-latest --pattern cloud.mmdb --output cloud.mmdb ||
+            echo "no previous cloud.mmdb; drop-guard will be skipped on this first build"
+          gh release download mmdb-latest --pattern asn.mmdb --output asn.mmdb ||
+            echo "no previous asn.mmdb; drop-guard will be skipped on this first build"
+
+      - name: build databases
+        run: |
+          ./cloudattr build --source rezmoss-all --with-asn --out cloud.mmdb --csv cloud.csv
+          ./cloudattr build --asn --out asn.mmdb
+
+      - name: verify databases
+        run: |
+          ./cloudattr verify --in cloud.mmdb
+          ./cloudattr verify --in asn.mmdb
+
+      - name: package
+        run: |
+          gzip -9 -c cloud.csv > cloud.csv.gz
+          sha256sum cloud.mmdb asn.mmdb cloud.csv.gz > SHA256SUMS
+
+      - name: publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=mmdb-latest
+          notes="Built $(date -u +%FT%TZ).
+
+          - \`cloud.mmdb\` — Cloud-Attribution MMDB from the rezmoss CC0 mirror (all providers), enriched with origin ASNs from iptoasn.com (\`ext.asn\`/\`ext.as_org\`, split at BGP announcement boundaries).
+          - \`asn.mmdb\` — standalone IP->origin-ASN database for every routed range.
+
+          No reputation data (Spamhaus DROP restricts redistribution); build that locally with \`cloudattr build --reputation\` or \`--with-reputation\`.
+
+          \`\`\`
+          $(cat SHA256SUMS)
+          \`\`\`"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes "$notes"
+          else
+            gh release create "$tag" --title "Latest Cloud-Attribution databases" --notes "$notes"
+          fi
+          gh release upload "$tag" cloud.mmdb asn.mmdb cloud.csv.gz SHA256SUMS --clobber

@@ -71,7 +71,7 @@ func runLookup(args []string) error {
 			if len(rec.Categories) > 0 {
 				tags = strings.Join(rec.Categories, ",")
 			}
-			fmt.Printf("%s\t%s\t%s\t%s\n", ip, rec.Provider, rec.Region, tags)
+			fmt.Printf("%s\t%s\t%s\t%s\t%s\n", ip, rec.Provider, rec.Region, tags, rec.Network)
 		}
 	}
 	// A miss is a valid answer, but a malformed IP is a failure; if every input
@@ -87,10 +87,14 @@ func recordMap(r attribution.Record) map[string]any {
 	if !r.SyncedAt.IsZero() {
 		synced = r.SyncedAt.Unix()
 	}
+	var network string
+	if r.Network.IsValid() {
+		network = r.Network.String()
+	}
 	return map[string]any{
 		"provider": r.Provider, "region": r.Region, "services": r.Services,
 		"categories": r.Categories, "ipv6": r.IPv6, "source": r.Source,
-		"synced_at": synced, "ext": r.Ext,
+		"synced_at": synced, "ext": r.Ext, "network": network,
 	}
 }
 

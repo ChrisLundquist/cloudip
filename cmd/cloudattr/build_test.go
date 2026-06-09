@@ -10,8 +10,15 @@ import (
 	"testing"
 
 	"github.com/ChrisLundquist/cloudip/attribution"
+	_ "github.com/ChrisLundquist/cloudip/plugins/asn/all"        // register ASN plugins for the build test
 	_ "github.com/ChrisLundquist/cloudip/plugins/reputation/all" // register reputation plugins for the build test
 )
+
+// asnFixture is a small ip2asn-combined.tsv: two adjacent Amazon ASNs splitting
+// 52.94.8.0/22, plus an unrouted row that must be skipped.
+const asnFixture = "52.94.8.0\t52.94.9.255\t8987\tIE\tAWS-GOVCLOUD\n" +
+	"52.94.10.0\t52.94.21.255\t16509\tUS\tAMAZON-02\n" +
+	"198.51.100.0\t198.51.100.255\t0\tNone\tNot routed\n"
 
 // TestRunBuildRezmossAllFixture drives runBuild end-to-end through the
 // rezmoss-all path against a local all_providers.json fixture, and checks the
@@ -187,6 +194,212 @@ func TestRunBuildReputationMirror(t *testing.T) {
 	}
 	if rec.Provider != "tor" || !contains(rec.Categories, "tor_exit") {
 		t.Errorf("record = %+v, want tor/tor_exit", rec)
+	}
+}
+
+// TestRunBuildWithReputation drives the combined build: cloud + reputation
+// feeds in one database, cloud stream first. A reputation /32 nested inside a
+// cloud range must keep the cloud identity and gain the reputation categories;
+// reputation-only IPs still resolve; pure cloud IPs stay category-free.
+func TestRunBuildWithReputation(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(feeds, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One AWS range; one Tor exit INSIDE it (52.94.0.55) and one outside.
+	mustWrite("aws/ip-ranges.json", `{
+	  "syncToken": "1", "createDate": "2026-06-08-00-00-00",
+	  "prefixes": [{"ip_prefix": "52.94.0.0/22", "region": "us-east-1", "service": "EC2", "network_border_group": "us-east-1"}],
+	  "ipv6_prefixes": []
+	}`)
+	mustWrite("tor/exit-list.txt", "52.94.0.55\n198.51.100.7\n")
+	mustWrite("feodo/ipblocklist.json", `[{"ip_address":"162.243.103.246","port":8080,"status":"offline","first_seen":"2022-06-04 21:24:53","malware":"Emotet"}]`)
+	mustWrite("spamhaus/drop.txt", "; header\n1.10.16.0/20 ; SBL256894\n")
+
+	out := filepath.Join(dir, "cloud.mmdb")
+	if err := runBuild([]string{"--with-reputation", "--fixtures", feeds, "--providers", "aws", "--out", out}); err != nil {
+		t.Fatalf("runBuild --with-reputation: %v", err)
+	}
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// The fused record: cloud identity + reputation category on the nested /32.
+	rec, found, err := db.LookupString("52.94.0.55")
+	if err != nil || !found {
+		t.Fatalf("nested ip: found=%v err=%v", found, err)
+	}
+	if rec.Provider != "aws" || rec.Region != "us-east-1" || !contains(rec.Services, "EC2") {
+		t.Errorf("nested ip lost cloud identity: %+v", rec)
+	}
+	if !contains(rec.Categories, "tor_exit") {
+		t.Errorf("nested ip categories = %v, want to contain tor_exit", rec.Categories)
+	}
+
+	// A cloud IP outside the /32 stays a clean cloud record.
+	rec, _, _ = db.LookupString("52.94.0.99")
+	if rec.Provider != "aws" || len(rec.Categories) != 0 {
+		t.Errorf("plain cloud ip changed: %+v", rec)
+	}
+
+	// Reputation-only entries are still present (no cloud overlap needed).
+	for ip, want := range map[string]string{
+		"198.51.100.7":    "tor_exit",
+		"162.243.103.246": "botnet_c2",
+		"1.10.16.1":       "drop",
+	} {
+		rec, found, err := db.LookupString(ip)
+		if err != nil || !found {
+			t.Errorf("%s: found=%v err=%v", ip, found, err)
+			continue
+		}
+		if !contains(rec.Categories, want) {
+			t.Errorf("%s categories = %v, want to contain %q", ip, rec.Categories, want)
+		}
+	}
+}
+
+// TestRunBuildWithReputationFlagValidation checks the flag interactions: the two
+// reputation modes are mutually exclusive, and --reputation-source is rejected
+// (not silently ignored) outside a --with-reputation build.
+func TestRunBuildWithReputationFlagValidation(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "x.mmdb")
+
+	err := runBuild([]string{"--reputation", "--with-reputation", "--out", out})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("--reputation --with-reputation should be rejected, got: %v", err)
+	}
+
+	err = runBuild([]string{"--reputation-source", "mirror", "--out", out})
+	if err == nil || !strings.Contains(err.Error(), "--with-reputation") {
+		t.Errorf("--reputation-source without --with-reputation should be rejected, got: %v", err)
+	}
+}
+
+// TestRunBuildASN drives the standalone IP->ASN build from a fixture and checks
+// the resulting DB: provider iptoasn, asn/as_org in ext, unrouted space absent.
+func TestRunBuildASN(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	if err := os.MkdirAll(filepath.Join(feeds, "iptoasn"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(feeds, "iptoasn", "ip2asn-combined.tsv"), []byte(asnFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "asn.mmdb")
+	if err := runBuild([]string{"--asn", "--fixtures", feeds, "--out", out}); err != nil {
+		t.Fatalf("runBuild --asn: %v", err)
+	}
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	rec, found, err := db.LookupString("52.94.8.1")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if rec.Provider != "iptoasn" || rec.Ext[attribution.ExtASN] != "8987" || rec.Ext[attribution.ExtASOrg] != "AWS-GOVCLOUD" {
+		t.Errorf("record = %+v, want iptoasn AS8987", rec)
+	}
+	if _, found, _ := db.LookupString("198.51.100.5"); found {
+		t.Error("unrouted AS0 space should not be attributed")
+	}
+}
+
+// TestRunBuildWithASN drives the enrichment join: an AWS /22 spanning two BGP
+// announcements comes out split, each piece carrying its origin AS in ext while
+// keeping the cloud identity.
+func TestRunBuildWithASN(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	mustWrite := func(rel, content string) {
+		p := filepath.Join(feeds, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 52.94.8.0/22 = 52.94.8.0-52.94.11.255: half announced by AS8987, half AS16509.
+	mustWrite("aws/ip-ranges.json", `{
+	  "syncToken": "1", "createDate": "2026-06-08-00-00-00",
+	  "prefixes": [{"ip_prefix": "52.94.8.0/22", "region": "us-east-1", "service": "EC2", "network_border_group": "us-east-1"}],
+	  "ipv6_prefixes": []
+	}`)
+	mustWrite("iptoasn/ip2asn-combined.tsv", asnFixture)
+
+	out := filepath.Join(dir, "cloud.mmdb")
+	if err := runBuild([]string{"--with-asn", "--fixtures", feeds, "--providers", "aws", "--out", out}); err != nil {
+		t.Fatalf("runBuild --with-asn: %v", err)
+	}
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	for ip, want := range map[string]struct{ asn, network string }{
+		"52.94.8.1":  {"8987", "52.94.8.0/23"},
+		"52.94.10.1": {"16509", "52.94.10.0/23"},
+	} {
+		rec, found, err := db.LookupString(ip)
+		if err != nil || !found {
+			t.Errorf("%s: found=%v err=%v", ip, found, err)
+			continue
+		}
+		if rec.Provider != "aws" || rec.Region != "us-east-1" || !contains(rec.Services, "EC2") {
+			t.Errorf("%s lost cloud identity: %+v", ip, rec)
+		}
+		if rec.Ext[attribution.ExtASN] != want.asn {
+			t.Errorf("%s asn = %q, want %q", ip, rec.Ext[attribution.ExtASN], want.asn)
+		}
+		if rec.Network.String() != want.network {
+			t.Errorf("%s network = %s, want %s (split at the announcement boundary)", ip, rec.Network, want.network)
+		}
+		// The pre-existing ext key survives alongside the stamped ones.
+		if rec.Ext["network_border_group"] != "us-east-1" {
+			t.Errorf("%s ext = %v, want network_border_group preserved", ip, rec.Ext)
+		}
+	}
+}
+
+// TestRunBuildASNFlagValidation checks the --asn/--with-asn flag interactions.
+func TestRunBuildASNFlagValidation(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "x.mmdb")
+
+	for _, args := range [][]string{
+		{"--asn", "--reputation", "--out", out},
+		{"--asn", "--with-reputation", "--out", out},
+		{"--asn", "--with-asn", "--out", out},
+	} {
+		if err := runBuild(args); err == nil || !strings.Contains(err.Error(), "--asn") {
+			t.Errorf("%v should be rejected, got: %v", args, err)
+		}
+	}
+	if err := runBuild([]string{"--asn", "--source", "rezmoss", "--out", out}); err == nil || !strings.Contains(err.Error(), "--asn-source") {
+		t.Errorf("--asn --source should be rejected, got: %v", err)
+	}
+	if err := runBuild([]string{"--asn-source", "mirror", "--out", out}); err == nil || !strings.Contains(err.Error(), "--with-asn") {
+		t.Errorf("--asn-source alone should be rejected, got: %v", err)
+	}
+	// mirror with no CLOUDIP_ASN_BASE must fail loudly naming the env var.
+	t.Setenv(attribution.ASNBaseEnv, "")
+	if err := runBuild([]string{"--asn", "--asn-source", "mirror", "--out", out}); err == nil || !strings.Contains(err.Error(), attribution.ASNBaseEnv) {
+		t.Errorf("--asn-source mirror with no base should error naming %s, got: %v", attribution.ASNBaseEnv, err)
 	}
 }
 
