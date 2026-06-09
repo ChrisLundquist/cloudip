@@ -53,7 +53,7 @@ func usage() {
 
 Usage:
   cloudattr build  [--source rezmoss|rezmoss-all|direct] [--fixtures DIR] [--providers a,b] [--out FILE] [--csv FILE] [--max-drop FRAC]
-  cloudattr build  --reputation [--out reputation.mmdb]    # Feodo C2, Spamhaus DROP, Tor exits
+  cloudattr build  --reputation [--source direct|mirror] [--out reputation.mmdb]  # Feodo C2, Spamhaus DROP, Tor exits
   cloudattr lookup IP [IP ...]      [--in FILE] [--format text|json]
   cloudattr lookup -f FILE          [--in FILE] [--format text|json]
   cloudattr export [--in FILE] [--out FILE]

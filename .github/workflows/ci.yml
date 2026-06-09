@@ -33,6 +33,24 @@ jobs:
       - name: build
         run: go build ./...
 
+  vulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # Scan dependencies and reachable code for known CVEs. The service fetches
+      # over the network and exposes HTTP/gRPC, so a vulnerable grpc/x/net should
+      # fail CI before it ships.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   docker:
     runs-on: ubuntu-latest
     needs: test

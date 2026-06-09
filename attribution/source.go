@@ -48,6 +48,15 @@ func RezmossBase() string {
 // CLOUDIP_REZMOSS_BASE override).
 func NewRezmossSource() *HTTPSource { return &HTTPSource{BaseURL: RezmossBase()} }
 
+// ReputationBaseEnv repoints reputation feeds — which have no rezmoss mirror — at
+// an internal HTTP cache, the analogue of RezmossBaseEnv for cloud feeds. The
+// build reads it when `--reputation --source mirror` is selected, fetching each
+// plugin's relative Refs() (e.g. "tor/exit-list.txt") from this base.
+const ReputationBaseEnv = "CLOUDIP_REPUTATION_BASE"
+
+// ReputationBase returns the CLOUDIP_REPUTATION_BASE override, or "" if unset.
+func ReputationBase() string { return strings.TrimSpace(os.Getenv(ReputationBaseEnv)) }
+
 // NewDirectSource returns an HTTPSource that treats refs as absolute URLs.
 func NewDirectSource() *HTTPSource { return &HTTPSource{} }
 

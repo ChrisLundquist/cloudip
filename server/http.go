@@ -59,7 +59,7 @@ func NewHTTPHandler(svc *Service) http.Handler {
 	mux.HandleFunc("GET /healthz", svc.handleHealthz)
 	mux.HandleFunc("GET /version", svc.handleVersion)
 	mux.HandleFunc("GET /metrics", svc.handleMetrics)
-	return mux
+	return recoverHTTP(mux)
 }
 
 // handleProvider answers identity-only ("which provider/region") lookups via the

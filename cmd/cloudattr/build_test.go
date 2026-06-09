@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,6 +133,61 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestRunBuildReputationSourceValidation checks that a reputation build rejects
+// the cloud-only rezmoss sources instead of silently ignoring --source, and that
+// --source mirror without a configured base fails with a clear error.
+func TestRunBuildReputationSourceValidation(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "reputation.mmdb")
+
+	for _, src := range []string{"rezmoss", "rezmoss-all"} {
+		err := runBuild([]string{"--reputation", "--source", src, "--providers", "tor", "--out", out})
+		if err == nil || !strings.Contains(err.Error(), "cloud-only") {
+			t.Errorf("--source %s should be rejected as cloud-only, got: %v", src, err)
+		}
+	}
+
+	// mirror with no CLOUDIP_REPUTATION_BASE set must fail loudly, not fall back.
+	t.Setenv(attribution.ReputationBaseEnv, "")
+	err := runBuild([]string{"--reputation", "--source", "mirror", "--providers", "tor", "--out", out})
+	if err == nil || !strings.Contains(err.Error(), attribution.ReputationBaseEnv) {
+		t.Errorf("--source mirror with no base should error naming %s, got: %v", attribution.ReputationBaseEnv, err)
+	}
+}
+
+// TestRunBuildReputationMirror repoints reputation feeds at an internal HTTP
+// mirror (CLOUDIP_REPUTATION_BASE + --source mirror), serving the plugins'
+// relative Refs(), and checks the build fetches and attributes from there.
+func TestRunBuildReputationMirror(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tor/exit-list.txt" {
+			_, _ = w.Write([]byte("171.25.193.25\n"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	t.Setenv(attribution.ReputationBaseEnv, srv.URL)
+	out := filepath.Join(t.TempDir(), "reputation.mmdb")
+	if err := runBuild([]string{"--reputation", "--source", "mirror", "--providers", "tor", "--out", out}); err != nil {
+		t.Fatalf("mirror build: %v", err)
+	}
+
+	db, err := attribution.OpenValidated(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rec, found, err := db.LookupString("171.25.193.25")
+	if err != nil || !found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+	if rec.Provider != "tor" || !contains(rec.Categories, "tor_exit") {
+		t.Errorf("record = %+v, want tor/tor_exit", rec)
+	}
 }
 
 // TestRunBuildKeepGoing checks per-feed isolation: with one provider's fixture
