@@ -1,7 +1,10 @@
 package attribution
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,8 +30,23 @@ type HTTPSource struct {
 // Upstream provider terms still apply; the mirror itself is public domain.
 const rezmossRawBase = "https://raw.githubusercontent.com/rezmoss/cloud-provider-ip-addresses/main/"
 
-// NewRezmossSource returns an HTTPSource pinned to the rezmoss CC0 mirror.
-func NewRezmossSource() *HTTPSource { return &HTTPSource{BaseURL: rezmossRawBase} }
+// RezmossBaseEnv overrides the rezmoss base URL, so an internal mirror or an
+// air-gapped HTTP cache can be used without forking. The value should end in a
+// path the per-provider refs hang off of (a trailing slash is normalized).
+const RezmossBaseEnv = "CLOUDIP_REZMOSS_BASE"
+
+// RezmossBase returns the effective rezmoss base URL: the CLOUDIP_REZMOSS_BASE
+// override if set, else the canonical mirror.
+func RezmossBase() string {
+	if v := strings.TrimSpace(os.Getenv(RezmossBaseEnv)); v != "" {
+		return v
+	}
+	return rezmossRawBase
+}
+
+// NewRezmossSource returns an HTTPSource pinned to the rezmoss mirror (or its
+// CLOUDIP_REZMOSS_BASE override).
+func NewRezmossSource() *HTTPSource { return &HTTPSource{BaseURL: RezmossBase()} }
 
 // NewDirectSource returns an HTTPSource that treats refs as absolute URLs.
 func NewDirectSource() *HTTPSource { return &HTTPSource{} }
@@ -92,6 +110,40 @@ func (s *HTTPSource) Open(ctx context.Context, ref string) (io.ReadCloser, error
 // are transient; other 4xx are caller errors that won't improve on retry.
 func retryableStatus(code int) bool {
 	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500
+}
+
+// DigestSource wraps another Source to compute the SHA-256 of each fetched feed,
+// optionally verifying it against a pinned digest. It buffers the whole feed in
+// memory. This is a defense against a compromised or hijacked mirror silently
+// injecting networks: record the digests once, pin them, and a changed payload
+// fails the build instead of shipping.
+type DigestSource struct {
+	Inner  Source
+	Pins   map[string]string           // optional ref -> expected lowercase hex sha256
+	Record func(ref, sha256hex string) // optional, called with each computed digest
+}
+
+// Open fetches ref through Inner, hashes the body, records/verifies the digest,
+// and returns a reader over the buffered bytes.
+func (d DigestSource) Open(ctx context.Context, ref string) (io.ReadCloser, error) {
+	rc, err := d.Inner.Open(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		return nil, fmt.Errorf("read %s for digest: %w", ref, err)
+	}
+	sum := sha256.Sum256(data)
+	hexsum := hex.EncodeToString(sum[:])
+	if d.Record != nil {
+		d.Record(ref, hexsum)
+	}
+	if want, ok := d.Pins[ref]; ok && !strings.EqualFold(want, hexsum) {
+		return nil, fmt.Errorf("integrity check failed for %s: got %s, pinned %s", ref, hexsum, want)
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 // FileSource resolves refs as files under Dir (or as absolute paths when Dir is

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: gofmt
+        run: |
+          fmt=$(gofmt -l $(find . -name '*.go' -not -path './proto/cloudattrpb/*'))
+          if [ -n "$fmt" ]; then echo "gofmt needed on:"; echo "$fmt"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: test (race)
+        run: go test -race ./...
+
+      - name: build
+        run: go build ./...
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t cloudip:ci .

@@ -244,6 +244,33 @@ Servers pick the new file up via SIGHUP (`cloudattr serve`) or nginx
 `auto_reload`. The build epoch is stamped into MMDB metadata so `/version` and the
 warehouse partition always agree on which build they're looking at.
 
+## Deployment
+
+The repo ships the operational glue so you don't have to invent it:
+
+- **Docker** — a multi-stage [`Dockerfile`](Dockerfile) builds a static binary onto
+  a distroless base, and [`docker-compose.yml`](docker-compose.yml) wires a
+  build-once / serve / refresh-and-`HUP` flow.
+- **systemd** — [`deploy/systemd/`](deploy/systemd) has a hardened `serve` unit
+  (with `ExecReload` → SIGHUP hot-swap) plus a `build` oneshot + daily timer that
+  rebuilds and reloads. [`deploy/cron.example`](deploy/cron.example) is the cron
+  equivalent.
+- **CI** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs gofmt, vet,
+  `go test -race`, the build, and a Docker build on every push/PR.
+
+A few flags matter for running this unattended:
+
+- **`--keep-going`** (default on) isolates per-feed failures: if one provider's
+  feed times out, the others still build and the run is flagged `DEGRADED` rather
+  than failing wholesale. The drop/skip guards still refuse a build that lost too
+  much. Set `--keep-going=false` for strict all-or-nothing.
+- **`--pins pins.json` / `--print-digests`** verify the SHA-256 of each fetched
+  feed against pinned digests, so a compromised or hijacked mirror can't silently
+  inject networks. Generate the file with `--print-digests`, then pin it. (Pair
+  with `--keep-going=false` if you want a tampered feed to hard-fail the build.)
+- **`CLOUDIP_REZMOSS_BASE`** points the rezmoss source at an internal mirror or an
+  air-gapped HTTP cache without forking.
+
 ## Operational robustness (partial / corrupt data)
 
 A lot of care went into making the pipeline survive the ugly cases — disk-full,
