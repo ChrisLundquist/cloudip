@@ -15,7 +15,7 @@ import (
 
 func runBuild(args []string) error {
 	fs := flag.NewFlagSet("build", flag.ContinueOnError)
-	source := fs.String("source", "rezmoss", "feed source: rezmoss (per-provider CC0 files), rezmoss-all (every provider in one file), or direct (provider URLs)")
+	source := fs.String("source", "rezmoss", "feed source: rezmoss (per-provider CC0 files), rezmoss-all (every provider in one file), or direct (provider URLs); with --reputation: direct (default) or mirror (CLOUDIP_REPUTATION_BASE)")
 	fixtures := fs.String("fixtures", "", "build from local fixture dir instead of the network")
 	providers := fs.String("providers", "", "comma-separated provider subset (default: all registered)")
 	out := fs.String("out", "", "output MMDB path (default cloud.mmdb, or reputation.mmdb with --reputation)")
@@ -30,6 +30,16 @@ func runBuild(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// The --source default ("rezmoss") is a cloud source; track whether it was set
+	// explicitly so a reputation build can default to "direct" yet still validate
+	// (and reject) an explicit cloud-only source instead of silently ignoring it.
+	sourceSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "source" {
+			sourceSet = true
+		}
+	})
 
 	pinMap, record, err := digestOptions(*pins, *printDigests)
 	if err != nil {
@@ -94,11 +104,15 @@ func runBuild(args []string) error {
 		if len(plugins) == 0 {
 			return fmt.Errorf("no reputation plugins registered")
 		}
-		resolve := attribution.DirectResolver()
-		shownSrc := "direct"
-		if *fixtures != "" {
-			resolve = attribution.FixtureResolver(*fixtures)
-			shownSrc = "fixtures:" + *fixtures
+		// Reputation feeds have no rezmoss mirror, so --source is direct by default
+		// and the cloud-only rezmoss sources are rejected rather than ignored.
+		repSource := "direct"
+		if sourceSet {
+			repSource = *source
+		}
+		resolve, shownSrc, err := reputationResolver(repSource, *fixtures)
+		if err != nil {
+			return err
 		}
 		names := make([]string, len(plugins))
 		for i, p := range plugins {
@@ -196,6 +210,31 @@ func digestOptions(pinsPath string, printDigests bool) (map[string]string, func(
 		record = func(ref, sha string) { fmt.Fprintf(os.Stderr, "digest %s  %s\n", sha, ref) }
 	}
 	return pinMap, record, nil
+}
+
+// reputationResolver picks the feed source for a reputation build and a label to
+// print. --fixtures always wins (offline build). Otherwise: "direct" hits each
+// provider's own URL; "mirror" fetches the plugins' relative Refs() from
+// CLOUDIP_REPUTATION_BASE (an internal cache). The cloud-only rezmoss sources are
+// rejected with a clear error rather than silently ignored.
+func reputationResolver(source, fixtures string) (attribution.PluginSource, string, error) {
+	if fixtures != "" {
+		return attribution.FixtureResolver(fixtures), "fixtures:" + fixtures, nil
+	}
+	switch source {
+	case "direct":
+		return attribution.DirectResolver(), "direct", nil
+	case "mirror":
+		base := attribution.ReputationBase()
+		if base == "" {
+			return nil, "", fmt.Errorf("--source mirror requires %s to be set (the internal HTTP base to fetch reputation feeds from)", attribution.ReputationBaseEnv)
+		}
+		return attribution.MirrorResolver(base), "mirror:" + base, nil
+	case "rezmoss", "rezmoss-all":
+		return nil, "", fmt.Errorf("--source %s is cloud-only; reputation feeds have no rezmoss mirror (use direct, mirror, or --fixtures)", source)
+	default:
+		return nil, "", fmt.Errorf("unknown --source %q for --reputation (want direct, mirror, or --fixtures)", source)
+	}
 }
 
 func describeSource(source, fixtures string) string {

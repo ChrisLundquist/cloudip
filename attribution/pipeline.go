@@ -67,6 +67,23 @@ func FixtureResolver(dir string) PluginSource {
 	}
 }
 
+// MirrorResolver reads each plugin's native Refs() (relative paths like
+// "tor/exit-list.txt") from an HTTP base, parsing with the plugin's own parser.
+// It is FixtureResolver over HTTP: it repoints feeds that have no rezmoss mirror
+// — chiefly the reputation plugins — at an internal or air-gapped HTTP cache, the
+// same way RezmossResolver repoints cloud feeds via CLOUDIP_REZMOSS_BASE.
+func MirrorResolver(base string) PluginSource {
+	src := &HTTPSource{BaseURL: base}
+	return func(p Plugin) []Feed {
+		refs := p.Refs()
+		feeds := make([]Feed, len(refs))
+		for i, ref := range refs {
+			feeds[i] = Feed{Ref: ref, Source: src, Parse: p.Parse}
+		}
+		return feeds
+	}
+}
+
 // rezmossFeeds builds feeds for a plugin against the rezmoss mirror, using the
 // uniform rezmoss decoder tagged with the plugin's provider name.
 func rezmossFeeds(p Plugin, src Source) []Feed {

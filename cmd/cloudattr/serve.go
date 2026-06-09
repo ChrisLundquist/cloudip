@@ -121,7 +121,10 @@ func serve(ctx context.Context, svc *server.Service, cfg serveConfig) error {
 
 	var grpcSrv *grpc.Server
 	if grpcLn != nil {
-		grpcSrv = grpc.NewServer()
+		grpcSrv = grpc.NewServer(
+			grpc.ChainUnaryInterceptor(server.RecoveryUnaryInterceptor),
+			grpc.ChainStreamInterceptor(server.RecoveryStreamInterceptor),
+		)
 		cloudattrpb.RegisterCloudAttributionServer(grpcSrv, server.NewGRPCServer(svc))
 		go func() {
 			fmt.Fprintf(os.Stderr, "gRPC listening on %s\n", grpcLn.Addr())
