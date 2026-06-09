@@ -14,6 +14,10 @@ import (
 // at startup, look up concurrently.
 type DB struct {
 	r *maxminddb.Reader
+	// idx, when built, maps a record's data-section offset to its pre-decoded
+	// identity, so LookupProvider can skip the per-lookup MMDB decode. Records are
+	// deduplicated in the MMDB, so this holds one entry per distinct record.
+	idx map[uint64]miniRecord
 }
 
 // Open opens the MMDB at path. It does not validate the DatabaseType; use Verify
@@ -83,6 +87,69 @@ func (d *DB) Lookup(ip netip.Addr) (rec Record, found bool, err error) {
 		return Record{}, false, fmt.Errorf("decode record for %s: %w", ip, err)
 	}
 	return sr.toRecord(), true, nil
+}
+
+// Contains reports whether ip falls in any known network. It decodes nothing —
+// just a search-tree traversal — so it's the fastest "is this a cloud/known IP?"
+// check, with zero allocations.
+func (d *DB) Contains(ip netip.Addr) bool {
+	return d.r.Lookup(ip).Found()
+}
+
+// miniRecord decodes only the attribution identity, skipping the heavier
+// services/categories/ext fields.
+type miniRecord struct {
+	Provider string `maxminddb:"provider"`
+	Region   string `maxminddb:"region"`
+}
+
+// LookupProvider returns just the provider and region for ip, skipping the
+// services/categories/ext decode. Use it when you only need attribution identity
+// (which cloud, which region) rather than the full record — it's markedly faster
+// and allocates far less than Lookup. If BuildIndex has been called it skips the
+// MMDB decode entirely (an in-memory offset lookup).
+func (d *DB) LookupProvider(ip netip.Addr) (provider, region string, found bool, err error) {
+	res := d.r.Lookup(ip)
+	if err := res.Err(); err != nil {
+		return "", "", false, fmt.Errorf("lookup %s: %w", ip, err)
+	}
+	if !res.Found() {
+		return "", "", false, nil
+	}
+	if d.idx != nil {
+		m := d.idx[uint64(res.Offset())]
+		return m.Provider, m.Region, true, nil
+	}
+	var m miniRecord
+	if err := res.Decode(&m); err != nil {
+		return "", "", false, fmt.Errorf("decode provider for %s: %w", ip, err)
+	}
+	return m.Provider, m.Region, true, nil
+}
+
+// BuildIndex pre-decodes every record's provider/region into an in-memory map
+// keyed by data-section offset, so subsequent LookupProvider calls skip the MMDB
+// decode (trading a few MB of heap for ~2-3x faster identity lookups). Call it
+// once after Open, before sharing the DB across goroutines; it is not safe to run
+// concurrently with lookups. Idempotent.
+func (d *DB) BuildIndex() error {
+	idx := make(map[uint64]miniRecord)
+	for res := range d.r.Networks() {
+		if err := res.Err(); err != nil {
+			return fmt.Errorf("build index: %w", err)
+		}
+		off := uint64(res.Offset())
+		if _, ok := idx[off]; ok {
+			continue // record already decoded (offsets are deduplicated)
+		}
+		var m miniRecord
+		if err := res.Decode(&m); err != nil {
+			return fmt.Errorf("build index decode: %w", err)
+		}
+		idx[off] = m
+	}
+	d.idx = idx
+	return nil
 }
 
 // LookupString parses ip and looks it up.

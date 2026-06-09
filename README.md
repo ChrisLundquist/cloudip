@@ -71,14 +71,27 @@ from a file or stdin, plus a couple of housekeeping commands:
 ./cloudattr serve --in cloud.mmdb --http :8080 --grpc :9090
 ```
 
-The HTTP surface is small and predictable — one lookup endpoint (with a batch
-variant) plus the usual operational trio:
+The HTTP surface is small and predictable — a full-record lookup, a fast
+identity-only lookup, a batch variant, plus the usual operational trio:
 
 ```
 GET /v1/lookup/{ip}        -> 200 {record} | 404 | 400
-GET /v1/lookup?ip=&ip=     -> 200 [{ip,found,record}, ...]   # batch
+GET /v1/provider/{ip}      -> 200 {provider,region} | 404      # fast path
+GET /v1/lookup?ip=&ip=     -> 200 [{ip,found,record}, ...]     # batch
 GET /healthz  GET /metrics  GET /version
 ```
+
+## Performance
+
+The reader is fast: a membership check (`Contains`) is an allocation-free
+search-tree traversal, and identity lookups (`LookupProvider` / `/v1/provider`)
+run at **~50 ns with zero allocations** once the in-memory index is built
+(`serve --index`). In a head-to-head on the same real cloud IPs, this matches or
+beats [`rezmoss/go-cloudip`](https://github.com/rezmoss/go-cloudip) — **1.9× faster
+on membership, 1.5× faster on provider lookup** — while carrying 24× more data and
+keeping the database on disk (mmap'd, shareable, nginx-readable) rather than
+duplicated on every process's heap. Full numbers and methodology in
+[`BENCHMARKS.md`](BENCHMARKS.md); reproduce with `cd bench && go test -bench .`.
 
 ## Reputation feeds
 

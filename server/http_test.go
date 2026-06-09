@@ -116,6 +116,36 @@ func seq(es []attribution.Entry) iter.Seq2[attribution.Entry, error] {
 	}
 }
 
+// TestHTTPProviderEndpoint covers the fast /v1/provider path, with the in-memory
+// index enabled, and confirms it matches the full lookup's identity.
+func TestHTTPProviderEndpoint(t *testing.T) {
+	svc, err := NewServiceIndexed(buildTestDB(t), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer svc.Close()
+	h := NewHTTPHandler(svc)
+
+	rec := do(t, h, "/v1/provider/52.94.0.1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["provider"] != "aws" || got["region"] != "us-east-1" {
+		t.Errorf("provider response = %v", got)
+	}
+
+	if do(t, h, "/v1/provider/203.0.113.1").Code != http.StatusNotFound {
+		t.Error("miss should be 404")
+	}
+	if do(t, h, "/v1/provider/not-an-ip").Code != http.StatusBadRequest {
+		t.Error("bad ip should be 400")
+	}
+}
+
 // TestHTTPCategories asserts reputation categories serialize over HTTP and that
 // a pure-cloud record omits the categories key entirely (the omitempty guarantee).
 func TestHTTPCategories(t *testing.T) {

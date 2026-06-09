@@ -30,11 +30,12 @@ func runServe(args []string) error {
 	in := fs.String("in", "cloud.mmdb", "MMDB path to serve")
 	httpAddr := fs.String("http", ":8080", "HTTP listen address (empty to disable)")
 	grpcAddr := fs.String("grpc", ":9090", "gRPC listen address (empty to disable)")
+	index := fs.Bool("index", false, "build an in-memory provider index at load for faster /v1/provider lookups (trades heap for speed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	svc, err := server.NewService(*in)
+	svc, err := server.NewServiceIndexed(*in, *index)
 	if err != nil {
 		return err
 	}
@@ -78,12 +79,31 @@ func runServe(args []string) error {
 func serve(ctx context.Context, svc *server.Service, cfg serveConfig) error {
 	errc := make(chan error, 2)
 
-	var httpSrv *http.Server
+	// Acquire BOTH listeners before starting any serve goroutine: if gRPC fails to
+	// listen we just close the HTTP listener and return, with no Serve goroutine
+	// ever started — which avoids racing httpSrv.Shutdown against httpSrv.Serve's
+	// listener registration (Shutdown only closes listeners Serve has registered).
+	var httpLn, grpcLn net.Listener
 	if cfg.httpAddr != "" {
 		ln, err := net.Listen("tcp", cfg.httpAddr)
 		if err != nil {
 			return fmt.Errorf("http listen: %w", err)
 		}
+		httpLn = ln
+	}
+	if cfg.grpcAddr != "" {
+		ln, err := net.Listen("tcp", cfg.grpcAddr)
+		if err != nil {
+			if httpLn != nil {
+				httpLn.Close() // don't leave the HTTP listener open on early return
+			}
+			return fmt.Errorf("grpc listen: %w", err)
+		}
+		grpcLn = ln
+	}
+
+	var httpSrv *http.Server
+	if httpLn != nil {
 		httpSrv = &http.Server{
 			Handler:           server.NewHTTPHandler(svc),
 			ReadHeaderTimeout: 5 * time.Second, // bound slow-header (Slowloris) clients
@@ -92,25 +112,20 @@ func serve(ctx context.Context, svc *server.Service, cfg serveConfig) error {
 			IdleTimeout:       60 * time.Second,
 		}
 		go func() {
-			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", ln.Addr())
-			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", httpLn.Addr())
+			if err := httpSrv.Serve(httpLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errc <- fmt.Errorf("http: %w", err)
 			}
 		}()
 	}
 
 	var grpcSrv *grpc.Server
-	if cfg.grpcAddr != "" {
-		lis, err := net.Listen("tcp", cfg.grpcAddr)
-		if err != nil {
-			shutdown(httpSrv, nil) // don't leave the HTTP server running
-			return fmt.Errorf("grpc listen: %w", err)
-		}
+	if grpcLn != nil {
 		grpcSrv = grpc.NewServer()
 		cloudattrpb.RegisterCloudAttributionServer(grpcSrv, server.NewGRPCServer(svc))
 		go func() {
-			fmt.Fprintf(os.Stderr, "gRPC listening on %s\n", lis.Addr())
-			if err := grpcSrv.Serve(lis); err != nil {
+			fmt.Fprintf(os.Stderr, "gRPC listening on %s\n", grpcLn.Addr())
+			if err := grpcSrv.Serve(grpcLn); err != nil {
 				errc <- fmt.Errorf("grpc: %w", err)
 			}
 		}()

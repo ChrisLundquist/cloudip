@@ -401,6 +401,57 @@ func TestPureCloudHasNoCategories(t *testing.T) {
 	}
 }
 
+// TestLookupProviderIndexMatches confirms the in-memory index returns identical
+// results to the decode path, and that Contains agrees.
+func TestLookupProviderIndexMatches(t *testing.T) {
+	es := []Entry{
+		{Network: mustPrefix(t, "52.94.0.0/22"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}},
+		{Network: mustPrefix(t, "2600:1f00::/24"), Record: Record{Provider: "aws", Region: "us-east-1", Services: []string{"EC2"}}},
+		{Network: mustPrefix(t, "8.34.208.0/20"), Record: Record{Provider: "gcp", Region: "us-central1", Services: []string{"GC"}}},
+	}
+	var buf bytes.Buffer
+	if _, err := Build(entriesFrom(es), &buf, BuildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenBytes(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	probe := []string{"52.94.0.1", "2600:1f00::1", "8.34.208.9", "203.0.113.1"}
+
+	// Decode-path results first.
+	want := map[string][2]string{}
+	wantFound := map[string]bool{}
+	for _, ip := range probe {
+		addr := netip.MustParseAddr(ip)
+		p, r, found, err := db.LookupProvider(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want[ip] = [2]string{p, r}
+		wantFound[ip] = found
+		if found != db.Contains(addr) {
+			t.Errorf("%s: Contains disagrees with LookupProvider", ip)
+		}
+	}
+
+	// Now with the index built, results must be identical.
+	if err := db.BuildIndex(); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range probe {
+		p, r, found, err := db.LookupProvider(netip.MustParseAddr(ip))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found != wantFound[ip] || (found && [2]string{p, r} != want[ip]) {
+			t.Errorf("%s indexed=(%q,%q,%v) want %v,%v", ip, p, r, found, want[ip], wantFound[ip])
+		}
+	}
+}
+
 func TestBuildVersionAndVerify(t *testing.T) {
 	es := []Entry{
 		{Network: mustPrefix(t, "13.248.0.0/16"), Record: Record{Provider: "aws", Services: []string{"EC2"}}},
