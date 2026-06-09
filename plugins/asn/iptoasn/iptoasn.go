@@ -60,6 +60,7 @@ func ParseTable(r io.Reader) ([]attribution.ASNRange, error) {
 	var rows []attribution.ASNRange
 	intern := map[string]string{}
 	sc := bufio.NewScanner(br)
+	sc.Buffer(make([]byte, 64<<10), 1<<20) // real lines are tiny; don't die on a pathological one
 	for line := 1; sc.Scan(); line++ {
 		text := strings.TrimSpace(sc.Text())
 		if text == "" || strings.HasPrefix(text, "#") {
@@ -103,7 +104,9 @@ func ParseTable(r io.Reader) ([]attribution.ASNRange, error) {
 
 // Parse normalizes the table into entries for a standalone ASN database: one
 // entry per CIDR-aligned piece of each announced range, the ASN riding in ext
-// (asn, as_org) so nginx and every other consumer can read it.
+// (asn, as_org) so nginx and every other consumer can read it. Rows are
+// coalesced first: iptoasn splits ranges where only the country code (which
+// we drop) changes, so adjacent same-AS rows merge into fewer, wider networks.
 func (Plugin) Parse(ref string, r io.Reader) iter.Seq2[attribution.Entry, error] {
 	return func(yield func(attribution.Entry, error) bool) {
 		rows, err := ParseTable(r)
@@ -111,6 +114,7 @@ func (Plugin) Parse(ref string, r io.Reader) iter.Seq2[attribution.Entry, error]
 			yield(attribution.Entry{}, err)
 			return
 		}
+		rows = attribution.CoalesceASNRanges(rows)
 		// One ext map per distinct ASN, shared across its ranges: entries are
 		// read-only downstream and the MMDB dedups identical records anyway.
 		exts := map[uint32]map[string]string{}

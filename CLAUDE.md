@@ -28,17 +28,19 @@ by nginx via the stock `ngx_http_geoip2_module`. Module path:
     (`Rezmoss`/`Direct`/`Fixture`). This is the seam between IO and parsing.
   - `rezmoss.go` — uniform rezmoss decoders: `ParseRezmoss` (per-provider file)
     and `ParseRezmossAll` + `CollectRezmossAll` (the unified all_providers.json).
+  - `asn.go` — `ASNRange`/`ASNTable` (BGP origin-AS interval table; rows are
+    coalesced into strictly non-overlapping form, which the binary search
+    depends on) and `EnrichASN`: a stream transform that stamps
+    `ext.asn`/`ext.as_org` into entries, SPLITTING them at announcement
+    boundaries (an AWS /22 half announced by AS8987 GovCloud comes out as two
+    entries). Unannounced gaps pass through unstamped. ASN lives in `ext`
+    (stored strings) precisely so nginx can read it, unlike the lookup-derived
+    `network`.
   - `export.go` (CSV), `verify.go` (tree walk + counts), `sync.go` (`BuildFile`:
     atomic temp→verify→drop-guard→rename).
 - `plugins/{aws,azure,gcp}/` — native parsers, self-register via `init()`, each
   with a `testdata/` fixture in the provider's OWN schema. `plugins/all` blank-
   imports them.
-  - `asn.go` — `ASNRange`/`ASNTable` (BGP origin-AS interval table) and
-    `EnrichASN`: a stream transform that stamps `ext.asn`/`ext.as_org` into
-    entries, SPLITTING them at announcement boundaries (an AWS /22 half
-    announced by AS8987 GovCloud comes out as two entries). Unannounced gaps
-    pass through unstamped. ASN lives in `ext` (stored strings) precisely so
-    nginx can read it, unlike the lookup-derived `network`.
 - `plugins/asn/iptoasn/` — IP->ASN plugin over the iptoasn.com table (public
   domain, BGP-derived, gzip-sniffing TSV parser). Registers in a THIRD registry
   (`RegisterASN`); `cloudattr build --asn` builds a standalone asn.mmdb,

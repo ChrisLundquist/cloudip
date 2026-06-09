@@ -21,6 +21,13 @@ on:
 permissions:
   contents: write # create/update the rolling release
 
+# A scheduled run overlapping a manual dispatch could interleave uploads and
+# publish a SHA256SUMS that doesn't match its co-published assets. Queue, don't
+# cancel: each run publishes a complete, consistent set.
+concurrency:
+  group: publish-mmdb
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -41,10 +48,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # On any failure remove the target: a partially-downloaded file would
+          # silently disarm the drop-guard (it fails to open and is ignored).
           gh release download mmdb-latest --pattern cloud.mmdb --output cloud.mmdb ||
-            echo "no previous cloud.mmdb; drop-guard will be skipped on this first build"
+            { rm -f cloud.mmdb; echo "no previous cloud.mmdb; drop-guard will be skipped on this first build"; }
           gh release download mmdb-latest --pattern asn.mmdb --output asn.mmdb ||
-            echo "no previous asn.mmdb; drop-guard will be skipped on this first build"
+            { rm -f asn.mmdb; echo "no previous asn.mmdb; drop-guard will be skipped on this first build"; }
 
       - name: build databases
         run: |
@@ -76,9 +85,10 @@ jobs:
           \`\`\`
           $(cat SHA256SUMS)
           \`\`\`"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" --notes "$notes"
-          else
-            gh release create "$tag" --title "Latest Cloud-Attribution databases" --notes "$notes"
+          # Upload assets BEFORE writing the notes, so the notes never advertise
+          # checksums for assets that aren't published yet (or failed to upload).
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "Latest Cloud-Attribution databases" --notes "publishing..."
           fi
           gh release upload "$tag" cloud.mmdb asn.mmdb cloud.csv.gz SHA256SUMS --clobber
+          gh release edit "$tag" --notes "$notes"

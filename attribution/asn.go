@@ -26,16 +26,17 @@ type ASNRange struct {
 }
 
 // ASNTable indexes ASNRanges for the interval lookups EnrichASN performs.
-// Rows are assumed non-overlapping within a family (as published by
-// iptoasn.com, a flattened view of the BGP table); overlapping rows degrade to
-// first-match rather than erroring. v4 and v6 rows are kept separate so a
-// search never compares across families.
+// NewASNTable normalizes rows into strictly non-overlapping form (the binary
+// search in enrichEntry depends on it), so arbitrary input is safe. v4 and v6
+// rows are kept separate so a search never compares across families.
 type ASNTable struct {
 	v4, v6 []ASNRange
 }
 
-// NewASNTable sorts rows into a searchable table. Rows with invalid or
-// mixed-family bounds are dropped; v4-mapped bounds are unmapped to native v4.
+// NewASNTable sorts and coalesces rows into a searchable table. Rows with
+// invalid or mixed-family bounds are dropped; v4-mapped bounds are unmapped to
+// native v4; overlaps and adjacent same-AS rows are normalized away (see
+// CoalesceASNRanges).
 func NewASNTable(rows []ASNRange) *ASNTable {
 	t := &ASNTable{}
 	for _, r := range rows {
@@ -50,9 +51,42 @@ func NewASNTable(rows []ASNRange) *ASNTable {
 			t.v6 = append(t.v6, r)
 		}
 	}
-	sort.Slice(t.v4, func(i, j int) bool { return t.v4[i].First.Compare(t.v4[j].First) < 0 })
-	sort.Slice(t.v6, func(i, j int) bool { return t.v6[i].First.Compare(t.v6[j].First) < 0 })
+	t.v4 = CoalesceASNRanges(t.v4)
+	t.v6 = CoalesceASNRanges(t.v6)
 	return t
+}
+
+// CoalesceASNRanges sorts rows by First and normalizes them into a strictly
+// non-overlapping, minimal set: a row overlapping its predecessor is clamped
+// to start after it (first row wins, and a fully-contained row is dropped),
+// and adjacent rows announcing the same ASN+Org are merged — iptoasn splits
+// ranges where only the country code (a field we drop) changes, so merging
+// shrinks both the enrichment table and a standalone ASN database. The input
+// slice is reordered and its backing array reused.
+func CoalesceASNRanges(rows []ASNRange) []ASNRange {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].First.Compare(rows[j].First) < 0 })
+	out := rows[:0]
+	for _, r := range rows {
+		if len(out) == 0 {
+			out = append(out, r)
+			continue
+		}
+		prev := &out[len(out)-1]
+		sameFamily := prev.Last.Is4() == r.First.Is4()
+		if sameFamily && r.First.Compare(prev.Last) <= 0 { // overlap: first row wins
+			next := prev.Last.Next()
+			if !next.IsValid() || next.Compare(r.Last) > 0 {
+				continue // fully contained in prev: drop
+			}
+			r.First = next
+		}
+		if sameFamily && prev.ASN == r.ASN && prev.Org == r.Org && prev.Last.Next() == r.First {
+			prev.Last = r.Last // adjacent same-AS announcements: merge
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // Len reports the number of usable rows in the table.
