@@ -1,0 +1,26 @@
+# Build the database once, then serve it; a separate profile refreshes it.
+#
+#   docker compose run --rm build     # produce ./data/cloud.mmdb
+#   docker compose up -d serve        # serve it on :8080 (HTTP) / :9090 (gRPC)
+#   docker compose run --rm build && docker compose kill -s HUP serve  # refresh + hot-reload
+services:
+  serve:
+    build: .
+    image: cloudip:latest
+    command: ["serve", "--in", "/data/cloud.mmdb", "--http", ":8080", "--grpc", ":9090"]
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ./data:/data:ro
+    restart: unless-stopped
+
+  build:
+    build: .
+    image: cloudip:latest
+    command: ["build", "--source", "rezmoss", "--out", "/data/cloud.mmdb", "--csv", "/data/cloud.csv"]
+    volumes:
+      - ./data:/data
+    # environment:
+    #   CLOUDIP_REZMOSS_BASE: https://mirror.internal/cloudip/
+    profiles: ["tools"]

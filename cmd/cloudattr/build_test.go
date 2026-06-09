@@ -133,6 +133,49 @@ func contains(ss []string, want string) bool {
 	return false
 }
 
+// TestRunBuildKeepGoing checks per-feed isolation: with one provider's fixture
+// missing, --keep-going builds the rest, and without it the build fails.
+func TestRunBuildKeepGoing(t *testing.T) {
+	dir := t.TempDir()
+	feeds := filepath.Join(dir, "feeds")
+	// Provide AWS's fixture but NOT azure/gcp, so those feeds fail to open.
+	if err := os.MkdirAll(filepath.Join(feeds, "aws"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	awsFixture, err := os.ReadFile("../../plugins/aws/testdata/ip-ranges.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(feeds, "aws", "ip-ranges.json"), awsFixture, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(dir, "cloud.mmdb")
+
+	// keep-going (default): builds AWS, skips azure/gcp.
+	if err := runBuild([]string{"--fixtures", feeds, "--out", out, "--max-skip", "0"}); err != nil {
+		t.Fatalf("keep-going build should succeed: %v", err)
+	}
+	db, err := attribution.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, _ := attribution.Verify(db)
+	db.Close()
+	if rep.ByProvider["aws"] == 0 {
+		t.Error("expected aws networks in the partial build")
+	}
+	if rep.ByProvider["azure"] != 0 || rep.ByProvider["gcp"] != 0 {
+		t.Error("azure/gcp should be absent (their feeds were missing)")
+	}
+
+	// --keep-going=false: a missing feed aborts the whole build.
+	out2 := filepath.Join(dir, "strict.mmdb")
+	if err := runBuild([]string{"--fixtures", feeds, "--out", out2, "--keep-going=false"}); err == nil {
+		t.Error("strict build should fail when a feed is missing")
+	}
+}
+
 // TestRunBuildReputationDefaultOut guards the footgun fix: a --reputation build
 // with no --out writes reputation.mmdb, NOT cloud.mmdb, so it can't clobber a
 // cloud database that happens to sit in the working directory.

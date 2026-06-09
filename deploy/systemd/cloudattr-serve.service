@@ -1,0 +1,29 @@
+# Serve the Cloud-Attribution database over HTTP + gRPC.
+# Install: copy to /etc/systemd/system/, then:
+#   systemctl daemon-reload && systemctl enable --now cloudattr-serve
+# A rebuild (see cloudattr-build.service) does `systemctl reload cloudattr-serve`
+# to pick up the atomically-replaced file via SIGHUP without dropping lookups.
+[Unit]
+Description=cloudattr serve (Cloud-Attribution MMDB)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cloudattr
+Group=cloudattr
+ExecStart=/usr/local/bin/cloudattr serve --in /var/lib/cloudattr/cloud.mmdb --http :8080 --grpc :9090
+# SIGHUP makes the server re-open and hot-swap the file (see Service.Reload).
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Hardening: the server only needs to read its database directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/lib/cloudattr
+
+[Install]
+WantedBy=multi-user.target

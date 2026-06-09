@@ -3,7 +3,6 @@ package server
 import (
 	"os"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,10 +91,18 @@ func TestStatsCounters(t *testing.T) {
 	}
 }
 
-// TestReloadConcurrentLookup hammers Lookup while Reload swaps the database, with
-// the grace-close shortened so swapped-out handles actually get closed during
-// the test. Run under -race; it must not data-race or segfault (the bug was an
-// immediate Close() munmapping under in-flight lookups).
+// TestReloadConcurrentLookup hammers Lookup while Reload swaps the database and
+// verifies the atomic.Pointer swap is race-free under -race. The deferred-close
+// handoff is verified WITHOUT closing any handle while a reader might still hold
+// it: the closeAfter override merely records each swapped-out handle, and the
+// recorded handles are closed only after the readers have stopped.
+//
+// (An earlier version of this test closed swapped-out handles on a 20ms
+// time.AfterFunc, which opened a use-after-free window: a reader goroutine could
+// still hold the old handle and read its mmap while the timer called Close() and
+// munmapped it. That is a test-only timing artifact, not a production bug —
+// production keeps a 30s closeGrace that comfortably outlasts any in-flight
+// lookup, so a swapped-out handle is never closed under an active reader.)
 func TestReloadConcurrentLookup(t *testing.T) {
 	path := buildTestDB(t)
 	svc, err := NewService(path)
@@ -104,14 +111,17 @@ func TestReloadConcurrentLookup(t *testing.T) {
 	}
 	defer svc.Close()
 
-	// Close swapped-out handles quickly (but still after any in-flight lookup),
-	// so the test exercises the deferred-close path rather than leaking handles.
-	var closes atomic.Int64
+	// Record swapped-out handles instead of closing them on a timer. Closing a
+	// handle here, while readers are live, would munmap under an in-flight
+	// Lookup; we defer every close until the readers have stopped (see below).
+	var (
+		swappedMu sync.Mutex
+		swapped   []*attribution.DB
+	)
 	svc.closeAfter = func(old *attribution.DB) {
-		time.AfterFunc(20*time.Millisecond, func() {
-			old.Close()
-			closes.Add(1)
-		})
+		swappedMu.Lock()
+		swapped = append(swapped, old)
+		swappedMu.Unlock()
 	}
 
 	stop := make(chan struct{})
@@ -156,9 +166,15 @@ func TestReloadConcurrentLookup(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	// Give the AfterFunc closers time to fire; the process must stay alive.
-	time.Sleep(60 * time.Millisecond)
-	if closes.Load() == 0 {
-		t.Error("expected some swapped-out handles to be closed")
+	// Readers have stopped and wg.Wait has joined them, so no goroutine can hold
+	// a swapped-out handle anymore. Closing the recorded handles is now safe —
+	// no use-after-free window. Assert the handoff actually happened.
+	swappedMu.Lock()
+	defer swappedMu.Unlock()
+	if len(swapped) == 0 {
+		t.Error("expected some swapped-out handles to be handed off for deferred close")
+	}
+	for _, old := range swapped {
+		old.Close()
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"iter"
@@ -23,8 +24,29 @@ func runBuild(args []string) error {
 	maxDrop := fs.Float64("max-drop", 0.5, "fail if network count drops more than this fraction vs existing --out")
 	maxSkip := fs.Float64("max-skip", 0.25, "fail if more than this fraction of entries are skipped (0 disables)")
 	reputation := fs.Bool("reputation", false, "build a reputation DB (Feodo botnet C2, Spamhaus DROP, Tor exits) instead of cloud providers")
+	keepGoing := fs.Bool("keep-going", true, "isolate per-feed failures: skip a feed that fails to fetch/parse and build the rest (the drop/skip guards still protect against mass loss)")
+	pins := fs.String("pins", "", "JSON file of {ref: sha256} digests to verify each fetched feed against (fails the build on mismatch)")
+	printDigests := fs.Bool("print-digests", false, "print the SHA-256 of each fetched feed (use to populate a --pins file)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	pinMap, record, err := digestOptions(*pins, *printDigests)
+	if err != nil {
+		return err
+	}
+	digest := pinMap != nil || record != nil
+	wrapResolve := func(r attribution.PluginSource) attribution.PluginSource {
+		if !digest {
+			return r
+		}
+		return attribution.WithDigest(r, pinMap, record)
+	}
+	wrapSource := func(s attribution.Source) attribution.Source {
+		if !digest {
+			return s
+		}
+		return attribution.DigestSource{Inner: s, Pins: pinMap, Record: record}
 	}
 
 	// Default the output path by mode so a reputation build never clobbers the
@@ -43,6 +65,19 @@ func runBuild(args []string) error {
 	var prev *attribution.VerifyReport
 	if r, err := verifyCount(*out); err == nil {
 		prev = &r
+	}
+
+	// collect chooses fail-fast vs per-feed isolation. On isolation, a failing
+	// feed is logged and skipped; the drop/skip guards below still protect publish.
+	var failures []attribution.FeedFailure
+	collect := func(plugins []attribution.Plugin, resolve attribution.PluginSource) iter.Seq2[attribution.Entry, error] {
+		if !*keepGoing {
+			return attribution.Collect(ctx, plugins, resolve)
+		}
+		return attribution.CollectResilient(ctx, plugins, resolve, func(f attribution.FeedFailure) {
+			failures = append(failures, f)
+			fmt.Fprintf(os.Stderr, "warning: skipping feed %s\n", f)
+		})
 	}
 
 	// rezmoss-all consumes every provider from one unified file; --providers
@@ -70,12 +105,12 @@ func runBuild(args []string) error {
 			names[i] = p.Name()
 		}
 		fmt.Fprintf(os.Stderr, "building %s (reputation) from [%s] via %s\n", *out, strings.Join(names, ","), shownSrc)
-		entries = attribution.Collect(ctx, plugins, resolve)
+		entries = collect(plugins, wrapResolve(resolve))
 	} else if *source == "rezmoss-all" {
 		filter := splitCSV(*providers)
-		src := attribution.Source(attribution.NewRezmossSource())
+		src := wrapSource(attribution.NewRezmossSource())
 		if *fixtures != "" {
-			src = attribution.FileSource{Dir: *fixtures}
+			src = wrapSource(attribution.FileSource{Dir: *fixtures})
 		}
 		shown := "all"
 		if len(filter) > 0 {
@@ -109,7 +144,7 @@ func runBuild(args []string) error {
 			names[i] = p.Name()
 		}
 		fmt.Fprintf(os.Stderr, "building %s from providers [%s] via %s\n", *out, strings.Join(names, ","), describeSource(*source, *fixtures))
-		entries = attribution.Collect(ctx, plugins, resolve)
+		entries = collect(plugins, wrapResolve(resolve))
 	}
 
 	opts := attribution.BuildOptions{
@@ -126,6 +161,14 @@ func runBuild(args []string) error {
 	for prov, n := range res.Report.ByProvider {
 		fmt.Fprintf(os.Stderr, "  %-8s %d\n", prov, n)
 	}
+	if len(failures) > 0 {
+		// Published best-effort: the data passed the drop/skip guards, but flag the
+		// missing feeds loudly so a cron run is visibly degraded.
+		fmt.Fprintf(os.Stderr, "DEGRADED: %d feed(s) skipped:\n", len(failures))
+		for _, f := range failures {
+			fmt.Fprintf(os.Stderr, "  - %s\n", f)
+		}
+	}
 
 	if *csvOut != "" {
 		if err := exportCSVFile(*out, *csvOut); err != nil {
@@ -134,6 +177,25 @@ func runBuild(args []string) error {
 		fmt.Fprintf(os.Stderr, "wrote %s\n", *csvOut)
 	}
 	return nil
+}
+
+// digestOptions loads the optional pins file and builds the digest-print callback.
+func digestOptions(pinsPath string, printDigests bool) (map[string]string, func(ref, sha string), error) {
+	var pinMap map[string]string
+	if pinsPath != "" {
+		b, err := os.ReadFile(pinsPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read pins: %w", err)
+		}
+		if err := json.Unmarshal(b, &pinMap); err != nil {
+			return nil, nil, fmt.Errorf("parse pins %q: %w", pinsPath, err)
+		}
+	}
+	var record func(ref, sha string)
+	if printDigests {
+		record = func(ref, sha string) { fmt.Fprintf(os.Stderr, "digest %s  %s\n", sha, ref) }
+	}
+	return pinMap, record, nil
 }
 
 func describeSource(source, fixtures string) string {

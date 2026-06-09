@@ -1,0 +1,27 @@
+# Rebuild the database, then reload the serving process.
+# Paired with cloudattr-build.timer for a daily refresh. The build is atomic
+# (temp -> verify -> drop/skip guards -> rename), so a failed run leaves the
+# previous database in place and the serve unit keeps serving it.
+[Unit]
+Description=cloudattr build (refresh Cloud-Attribution MMDB)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cloudattr
+Group=cloudattr
+WorkingDirectory=/var/lib/cloudattr
+# Build into place atomically; --keep-going keeps one flaky provider from failing
+# the whole refresh. Add --pins pins.json to verify feed integrity.
+ExecStart=/usr/local/bin/cloudattr build --source rezmoss --out /var/lib/cloudattr/cloud.mmdb --csv /var/lib/cloudattr/cloud.csv
+# Only reload the server if the build succeeded (oneshot fails -> no reload).
+ExecStartPost=/bin/systemctl reload cloudattr-serve.service
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cloudattr
+# Point at an internal mirror instead of the public rezmoss base, if desired:
+# Environment=CLOUDIP_REZMOSS_BASE=https://mirror.internal/cloudip/
