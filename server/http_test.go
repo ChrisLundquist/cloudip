@@ -54,6 +54,9 @@ func TestHTTPLookup(t *testing.T) {
 	if jr.Provider != "aws" || len(jr.Services) != 2 {
 		t.Errorf("record = %+v", jr)
 	}
+	if jr.Network != "52.94.0.0/22" {
+		t.Errorf("network = %q, want 52.94.0.0/22", jr.Network)
+	}
 
 	// single miss -> 404
 	if got := do(t, h, "/v1/lookup/203.0.113.1").Code; got != http.StatusNotFound {

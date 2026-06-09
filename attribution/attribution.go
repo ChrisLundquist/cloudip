@@ -43,6 +43,14 @@ type Record struct {
 	// belong in the stable core (AWS network_border_group, Azure systemService, ...).
 	// Values are stored in the MMDB as strings so nginx can reach them.
 	Ext map[string]string
+	// Network is the matched network, set by the reader on Lookup. It is NOT
+	// stored in the MMDB (a stored network would rot when the tree splits ranges,
+	// and would defeat record deduplication); plugins leave it zero. It is the
+	// matched TREE NODE, which can be narrower than the CIDR a feed published:
+	// inserting a /32 inside a /20 fragments the /20 into smaller nodes sharing
+	// one record. Always a range that contains the queried IP and resolves to
+	// exactly this record — the same semantics as MaxMind's `network` field.
+	Network netip.Prefix
 }
 
 // Entry is one network and its normalized record, as yielded by a plugin.
@@ -128,6 +136,23 @@ func RegisterReputation(p Plugin) { reputationRegistry[p.Name()] = p }
 func ReputationPlugins() map[string]Plugin {
 	out := make(map[string]Plugin, len(reputationRegistry))
 	for k, v := range reputationRegistry {
+		out[k] = v
+	}
+	return out
+}
+
+// asnRegistry holds IP->ASN plugins (BGP-derived origin-AS tables). Like
+// reputation, they are a separate registry so an ASN build selects
+// independently of cloud builds; the records carry asn/as_org in Ext.
+var asnRegistry = map[string]Plugin{}
+
+// RegisterASN adds an ASN plugin. Plugins call this from init().
+func RegisterASN(p Plugin) { asnRegistry[p.Name()] = p }
+
+// ASNPlugins returns a copy of the ASN registry.
+func ASNPlugins() map[string]Plugin {
+	out := make(map[string]Plugin, len(asnRegistry))
+	for k, v := range asnRegistry {
 		out[k] = v
 	}
 	return out

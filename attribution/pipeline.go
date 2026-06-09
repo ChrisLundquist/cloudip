@@ -124,6 +124,24 @@ func Collect(ctx context.Context, plugins []Plugin, resolve PluginSource) iter.S
 	}
 }
 
+// ConcatEntries chains entry streams: everything from the first stream is
+// yielded before the second begins, and so on. Order is semantic, not
+// cosmetic — Build's merge inserter is first-writer-wins on provider identity,
+// so in a combined cloud+reputation build the cloud stream must come first:
+// a reputation /32 nested inside a cloud range then enriches the cloud
+// record's categories instead of claiming the prefix's identity.
+func ConcatEntries(seqs ...iter.Seq2[Entry, error]) iter.Seq2[Entry, error] {
+	return func(yield func(Entry, error) bool) {
+		for _, s := range seqs {
+			for e, err := range s {
+				if !yield(e, err) {
+					return
+				}
+			}
+		}
+	}
+}
+
 // FeedFailure records a feed that could not be ingested (open or parse error).
 type FeedFailure struct {
 	Provider string
@@ -211,6 +229,11 @@ func SelectPlugins(names []string) ([]Plugin, error) {
 // SelectReputationPlugins is SelectPlugins over the reputation registry.
 func SelectReputationPlugins(names []string) ([]Plugin, error) {
 	return selectFrom(ReputationPlugins(), names)
+}
+
+// SelectASNPlugins is SelectPlugins over the ASN registry.
+func SelectASNPlugins(names []string) ([]Plugin, error) {
+	return selectFrom(ASNPlugins(), names)
 }
 
 // selectFrom returns the plugins named in `names` from reg, or all of them

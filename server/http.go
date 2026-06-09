@@ -10,7 +10,9 @@ import (
 )
 
 // jsonRecord is the HTTP JSON shape of a record. synced_at is a unix epoch so
-// the wire form matches the MMDB and gRPC representations.
+// the wire form matches the MMDB and gRPC representations. network is the
+// matched tree node (derived at lookup, not stored): it always contains the
+// queried IP but can be narrower than the CIDR the feed published.
 type jsonRecord struct {
 	Provider   string            `json:"provider"`
 	Region     string            `json:"region"`
@@ -20,6 +22,7 @@ type jsonRecord struct {
 	Source     string            `json:"source"`
 	SyncedAt   int64             `json:"synced_at"`
 	Ext        map[string]string `json:"ext,omitempty"`
+	Network    string            `json:"network,omitempty"`
 }
 
 func toJSON(r attribution.Record) jsonRecord {
@@ -31,9 +34,13 @@ func toJSON(r attribution.Record) jsonRecord {
 	if svcs == nil {
 		svcs = []string{}
 	}
+	var network string
+	if r.Network.IsValid() {
+		network = r.Network.String()
+	}
 	return jsonRecord{
 		Provider: r.Provider, Region: r.Region, Services: svcs, Categories: r.Categories,
-		IPv6: r.IPv6, Source: r.Source, SyncedAt: synced, Ext: r.Ext,
+		IPv6: r.IPv6, Source: r.Source, SyncedAt: synced, Ext: r.Ext, Network: network,
 	}
 }
 

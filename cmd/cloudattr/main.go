@@ -12,6 +12,7 @@ import (
 	"os"
 
 	_ "github.com/ChrisLundquist/cloudip/plugins/all"            // register cloud provider plugins
+	_ "github.com/ChrisLundquist/cloudip/plugins/asn/all"        // register ASN plugins
 	_ "github.com/ChrisLundquist/cloudip/plugins/reputation/all" // register reputation plugins
 )
 
@@ -54,6 +55,9 @@ func usage() {
 Usage:
   cloudattr build  [--source rezmoss|rezmoss-all|direct] [--fixtures DIR] [--providers a,b] [--out FILE] [--csv FILE] [--max-drop FRAC]
   cloudattr build  --reputation [--source direct|mirror] [--out reputation.mmdb]  # Feodo C2, Spamhaus DROP, Tor exits
+  cloudattr build  --with-reputation [--reputation-source direct|mirror]          # one DB: cloud records enriched with categories
+  cloudattr build  --asn [--asn-source direct|mirror] [--out asn.mmdb]            # IP->origin-ASN DB (BGP-derived, iptoasn.com)
+  cloudattr build  --with-asn [--asn-source direct|mirror]                        # stamp ext.asn/ext.as_org into every record
   cloudattr lookup IP [IP ...]      [--in FILE] [--format text|json]
   cloudattr lookup -f FILE          [--in FILE] [--format text|json]
   cloudattr export [--in FILE] [--out FILE]

@@ -67,15 +67,19 @@ func (x *LookupRequest) GetIp() string {
 
 // Record is the stable attribution core plus a provider-namespaced ext map.
 type Record struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Provider      string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
-	Region        string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
-	Services      []string               `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
-	Ipv6          bool                   `protobuf:"varint,4,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
-	Source        string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
-	SyncedAt      int64                  `protobuf:"varint,6,opt,name=synced_at,json=syncedAt,proto3" json:"synced_at,omitempty"` // unix epoch of the feed
-	Ext           map[string]string      `protobuf:"bytes,7,rep,name=ext,proto3" json:"ext,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Categories    []string               `protobuf:"bytes,8,rep,name=categories,proto3" json:"categories,omitempty"` // reputation tags: botnet_c2, tor_exit, drop, ...
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Provider   string                 `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	Region     string                 `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"`
+	Services   []string               `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty"`
+	Ipv6       bool                   `protobuf:"varint,4,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
+	Source     string                 `protobuf:"bytes,5,opt,name=source,proto3" json:"source,omitempty"`
+	SyncedAt   int64                  `protobuf:"varint,6,opt,name=synced_at,json=syncedAt,proto3" json:"synced_at,omitempty"` // unix epoch of the feed
+	Ext        map[string]string      `protobuf:"bytes,7,rep,name=ext,proto3" json:"ext,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Categories []string               `protobuf:"bytes,8,rep,name=categories,proto3" json:"categories,omitempty"` // reputation tags: botnet_c2, tor_exit, drop, ...
+	// The matched network in CIDR form, derived by the reader at lookup time
+	// (never stored in the MMDB). This is the matched tree node: always contains
+	// the queried IP, but can be narrower than the CIDR the feed published.
+	Network       string `protobuf:"bytes,9,opt,name=network,proto3" json:"network,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -164,6 +168,13 @@ func (x *Record) GetCategories() []string {
 		return x.Categories
 	}
 	return nil
+}
+
+func (x *Record) GetNetwork() string {
+	if x != nil {
+		return x.Network
+	}
+	return ""
 }
 
 type LookupResult struct {
@@ -336,7 +347,7 @@ const file_cloudattr_proto_rawDesc = "" +
 	"\n" +
 	"\x0fcloudattr.proto\x12\fcloudattr.v1\"\x1f\n" +
 	"\rLookupRequest\x12\x0e\n" +
-	"\x02ip\x18\x01 \x01(\tR\x02ip\"\xaa\x02\n" +
+	"\x02ip\x18\x01 \x01(\tR\x02ip\"\xc4\x02\n" +
 	"\x06Record\x12\x1a\n" +
 	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x16\n" +
 	"\x06region\x18\x02 \x01(\tR\x06region\x12\x1a\n" +
@@ -347,7 +358,8 @@ const file_cloudattr_proto_rawDesc = "" +
 	"\x03ext\x18\a \x03(\v2\x1d.cloudattr.v1.Record.ExtEntryR\x03ext\x12\x1e\n" +
 	"\n" +
 	"categories\x18\b \x03(\tR\n" +
-	"categories\x1a6\n" +
+	"categories\x12\x18\n" +
+	"\anetwork\x18\t \x01(\tR\anetwork\x1a6\n" +
 	"\bExtEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"x\n" +

@@ -23,6 +23,9 @@ func TestGRPCLookupAndVersion(t *testing.T) {
 	if !res.Found || res.Record.Provider != "aws" || len(res.Record.Services) != 2 {
 		t.Errorf("lookup result = %+v", res)
 	}
+	if res.Record.Network != "52.94.0.0/22" {
+		t.Errorf("network = %q, want 52.94.0.0/22", res.Record.Network)
+	}
 
 	miss, err := g.Lookup(context.Background(), &pb.LookupRequest{Ip: "203.0.113.1"})
 	if err != nil {
