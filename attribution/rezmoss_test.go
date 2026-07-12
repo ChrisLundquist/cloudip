@@ -96,6 +96,66 @@ func TestParseRezmoss(t *testing.T) {
 	}
 }
 
+// TestParseRezmossBareIP guards the fix where a bare host IP (no '/') in a
+// rezmoss feed is accepted as a single-host prefix instead of failing the build.
+func TestParseRezmossBareIP(t *testing.T) {
+	const feed = `[
+	  {"ip_address":"5.134.119.103","ip_type":"IPv4","service":"AMAZON","region":"us-east-1"},
+	  {"ip_address":"2600:1f00::5","ip_type":"IPv6","service":"EC2","region":"us-east-1"}
+	]`
+
+	var entries []Entry
+	for e, err := range ParseRezmoss("aws")("aws/aws_ips.json", strings.NewReader(feed)) {
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	if got := entries[0].Network.String(); got != "5.134.119.103/32" {
+		t.Errorf("v4 bare IP = %q, want 5.134.119.103/32", got)
+	}
+	if got := entries[1].Network.String(); got != "2600:1f00::5/128" {
+		t.Errorf("v6 bare IP = %q, want 2600:1f00::5/128", got)
+	}
+}
+
+// TestParseRezmossAllBareIP is the same guard for the unified all_providers feed,
+// whose "cidr" field triggered the CI build failure.
+func TestParseRezmossAllBareIP(t *testing.T) {
+	const feed = `[
+	  {"cidr":"5.134.119.103","ip_version":"IPv4","provider":"aws","service":"AMAZON","region":"us-east-1","last_updated":"2026-06-08 03:23:35"},
+	  {"cidr":"52.94.0.0/22","ip_version":"IPv4","provider":"aws","service":"AMAZON","region":"us-east-1","last_updated":"2026-06-08 03:23:35"}
+	]`
+
+	var entries []Entry
+	for e, err := range ParseRezmossAll(nil)(RezmossAllRef, strings.NewReader(feed)) {
+		if err != nil {
+			t.Fatalf("parse error: %v", err)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2", len(entries))
+	}
+	if got := entries[0].Network.String(); got != "5.134.119.103/32" {
+		t.Errorf("bare IP = %q, want 5.134.119.103/32", got)
+	}
+	// A genuinely malformed field still surfaces an error.
+	var sawErr bool
+	const bad = `[{"cidr":"not-an-ip","ip_version":"IPv4","provider":"aws","service":"x","region":"","last_updated":""}]`
+	for _, err := range ParseRezmossAll(nil)(RezmossAllRef, strings.NewReader(bad)) {
+		if err != nil {
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Error("expected a parse error on a non-IP cidr field")
+	}
+}
+
 func TestRezmossRefsDefaultAndOverride(t *testing.T) {
 	// Default convention.
 	def := testPlugin{name: "aws"}

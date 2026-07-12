@@ -58,7 +58,7 @@ func ParseRezmoss(provider string) ParseFunc {
 					yield(Entry{}, err)
 					return
 				}
-				pre, err := netip.ParsePrefix(re.IPAddress)
+				pre, err := parseRezmossPrefix(re.IPAddress)
 				if err != nil {
 					if !yield(Entry{}, err) {
 						return
@@ -127,7 +127,7 @@ func ParseRezmossAll(filter map[string]bool) ParseFunc {
 				if len(filter) > 0 && !filter[re.Provider] {
 					continue
 				}
-				pre, err := netip.ParsePrefix(re.CIDR)
+				pre, err := parseRezmossPrefix(re.CIDR)
 				if err != nil {
 					if !yield(Entry{}, err) {
 						return
@@ -172,6 +172,22 @@ func CollectRezmossAll(ctx context.Context, src Source, providers []string) iter
 	return func(yield func(Entry, error) bool) {
 		collectFeed(ctx, "rezmoss-all", feed, yield)
 	}
+}
+
+// parseRezmossPrefix parses a rezmoss network field. The mirror is overwhelmingly
+// CIDRs, but the feeds occasionally emit a bare host IP with no '/' (e.g. a
+// single announced /32 rendered as "5.134.119.103"). Treat that as a single-host
+// prefix (/32 for v4, /128 for v6) rather than failing the whole build.
+func parseRezmossPrefix(s string) (netip.Prefix, error) {
+	pre, err := netip.ParsePrefix(s)
+	if err == nil {
+		return pre, nil
+	}
+	addr, aerr := netip.ParseAddr(s)
+	if aerr != nil {
+		return netip.Prefix{}, err // report the original ParsePrefix error
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 
 // parseRezmossTime parses all_providers.json's "2006-01-02 15:04:05" timestamp,
