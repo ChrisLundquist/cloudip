@@ -1,6 +1,6 @@
 module github.com/ChrisLundquist/cloudip
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/maxmind/mmdbwriter v1.2.0
